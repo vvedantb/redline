@@ -1,18 +1,14 @@
 import { clearBaseline, getBaseline, pinBaseline, REFRESH_EVENT, type BaselineState } from '@vedantb/redline';
 import { useCallback, useEffect, useState } from 'react';
-import { CloudBaseline } from './CloudBaseline';
 
 interface Props {
-  cloud: boolean;
   overlayOn: boolean;
   onToggleOverlay: (on: boolean) => void;
-  cloudSha: string | null;
-  onUseCloudSha: (sha: string | null) => void;
 }
 
 const short = (sha: string | null | undefined) => (sha ? sha.slice(0, 12) : 'none');
 
-export function RedlineControls({ cloud, overlayOn, onToggleOverlay, cloudSha, onUseCloudSha }: Props) {
+export function RedlineControls({ overlayOn, onToggleOverlay }: Props) {
   const [state, setState] = useState<BaselineState | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -53,11 +49,6 @@ export function RedlineControls({ cloud, overlayOn, onToggleOverlay, cloudSha, o
       <label>
         <input type="checkbox" checked={overlayOn} onChange={(e) => onToggleOverlay(e.target.checked)} /> Overlay
       </label>
-      {cloud ? (
-        <CloudBaseline headSha={state?.headSha ?? null} cloudSha={cloudSha} onUseCloudSha={onUseCloudSha} />
-      ) : (
-        <span className="muted">Local mode (no Clerk key)</span>
-      )}
       {error && <span className="error">{error}</span>}
     </aside>
   );

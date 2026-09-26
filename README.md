@@ -97,7 +97,7 @@ The Next.js integration is covered by unit tests only. The E2E suite runs agains
 
 ## Pinning a baseline
 
-A baseline is the "last good" state that Redline diffs against. There are three ways to hold it.
+A baseline is the "last good" state that Redline diffs against. Redline stores it locally. There is no auth or backend. There are two ways to set it.
 
 ### Local file (default)
 
@@ -110,6 +110,8 @@ A baseline is the "last good" state that Redline diffs against. There are three 
 | `{ "files": { "src/Hero.tsx": "..." } }` | content | Pins file contents. Only these files are diffed, against what is on disk now. |
 
 Git mode diffs the working tree against the pinned commit. This includes committed changes, uncommitted edits and untracked files. Content mode suits tests and cases with no useful commit to point at.
+
+`GET /__redline/baseline` returns the current `HEAD` SHA and the pinned baseline. `POST /__redline/clear` removes the pin.
 
 From the browser:
 
@@ -129,19 +131,13 @@ These helpers also mirror the baseline to `localStorage` (`redline:baseline`). I
 
 `GET /__redline/diff?baseline=<sha>` diffs against a given commit without changing the pinned file. `<RedlineOverlay baseline={sha} />` uses this.
 
-### Convex (optional, per user)
-
-The `convex/` folder holds a small backend that stores one baseline SHA per signed-in user: `{ userId, sha, notes?, updatedAt }`. `userId` is the Clerk subject, not an email address. The functions are `baselines:get`, `baselines:set` and `baselines:clear`. `set` and `clear` require a signed-in user; `get` returns null when signed out.
-
-The demo shows how to read the SHA with `useQuery` and pass it to `<RedlineOverlay baseline={sha} />`. Content baselines are local only; Convex stores git SHAs.
-
 ## Overlay
 
 ```tsx
 <RedlineOverlay
   endpoint="/__redline"   // base URL of the endpoints
   enabled={true}          // force on or off
-  baseline={null}         // git SHA override, for example from Convex
+  baseline={null}         // git SHA override for this request only
   pollInterval={2000}     // ms; 0 turns polling off
   respectReducedMotion    // default true
   color="#e11d48"
@@ -167,47 +163,6 @@ Call `refreshRedline()` to make the overlay refetch straight away. It otherwise 
 - If an element is entirely new, its tagged children are folded into it, so it gets one outline.
 - Lines outside any JSX host element (imports, helpers, types) are ignored. CSS changes are returned by the diff endpoint but are not outlined, because CSS lines do not map to elements.
 - Only host elements are tagged. A change to a component's props at the call site maps to the nearest host element around the call.
-
-## Environment variables
-
-Demo (`apps/demo/.env.local`, copied from `.env.example`):
-
-| Variable | Required | Meaning |
-| --- | --- | --- |
-| `VITE_CONVEX_URL` | No | Convex deployment URL. Defaults in `.env.example` to the dev deployment. |
-| `VITE_CLERK_PUBLISHABLE_KEY` | No | Clerk publishable key. Without it the demo runs in local baseline mode and does not contact Convex or Clerk. |
-
-Convex (set in the Convex dashboard, not in this repo):
-
-| Variable | Meaning |
-| --- | --- |
-| `CLERK_JWT_ISSUER_DOMAIN` | Clerk issuer. Defaults to `https://clerk.vedantb.com` in `convex/auth.config.ts`. |
-
-No secret keys are stored in this repo. The Clerk publishable key is safe to expose in the browser. Do not commit the Clerk secret key.
-
-## Clerk and Convex set-up
-
-Convex team `vvv`, project `redline`:
-
-| Deployment | Name | URL |
-| --- | --- | --- |
-| Dev | `formal-gerbil-920` | `https://formal-gerbil-920.eu-west-1.convex.cloud` |
-| Prod | `avid-goat-763` | `https://avid-goat-763.eu-west-1.convex.cloud` |
-
-Clerk uses the domain `clerk.vedantb.com` (the same Clerk instance as Bee). To enable signed-in baselines:
-
-1. In Clerk, create a JWT template named `convex` (Clerk's Convex template).
-2. In the Convex dashboard for `formal-gerbil-920`, set `CLERK_JWT_ISSUER_DOMAIN=https://clerk.vedantb.com` if you need a value other than the default.
-3. Log in and push the functions to the dev deployment only:
-
-   ```sh
-   npx convex login
-   npx convex dev --once   # select team vvv, project redline, dev deployment formal-gerbil-920
-   ```
-
-4. Put the Clerk publishable key in `apps/demo/.env.local` as `VITE_CLERK_PUBLISHABLE_KEY`.
-
-The functions use `queryGeneric` and `mutationGeneric`, so the repo does not need a committed `convex/_generated` folder. Deploy to prod (`avid-goat-763`) only with `npx convex deploy` once the dev deployment is checked.
 
 ## Run the demo
 
@@ -240,14 +195,13 @@ The E2E suite tests the package on its own demo. It needs the Vite dev server, b
 - pinning `HEAD` from the UI stores the git SHA
 - `?redline=0`, reduced motion, and the overlay toggle each turn the overlay off
 
-The suite does not need Clerk or Convex credentials. CI runs the same commands on Node 22 (`.github/workflows/ci.yml`).
+The suite is local only. It needs no auth, backend or credentials. CI runs the same commands on Node 22 (`.github/workflows/ci.yml`).
 
 ## Repo layout
 
 ```
 packages/redline   the npm package
 apps/demo          Vite + React demo that uses Redline on itself
-convex/            Convex schema and functions for per-user baselines
 e2e/               Playwright tests and baseline fixtures
 ```
 

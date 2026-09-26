@@ -9,4 +9,3 @@ playwright-report/
 blob-report/
 *.log
 .DS_Store
-convex/_generated/

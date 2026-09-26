@@ -17,10 +17,8 @@ function initialOverlayOn(): boolean {
   }
 }
 
-export function App({ cloud }: { cloud: boolean }) {
+export function App() {
   const [overlayOn, setOverlayOn] = useState(initialOverlayOn);
-  // Set when a signed-in user chooses to diff against their Convex baseline.
-  const [cloudSha, setCloudSha] = useState<string | null>(null);
 
   const toggleOverlay = (on: boolean) => {
     try {
@@ -34,13 +32,7 @@ export function App({ cloud }: { cloud: boolean }) {
 
   return (
     <>
-      <RedlineControls
-        cloud={cloud}
-        overlayOn={overlayOn}
-        onToggleOverlay={toggleOverlay}
-        cloudSha={cloudSha}
-        onUseCloudSha={setCloudSha}
-      />
+      <RedlineControls overlayOn={overlayOn} onToggleOverlay={toggleOverlay} />
       <div className="page">
         <Header />
         <main>
@@ -50,7 +42,7 @@ export function App({ cloud }: { cloud: boolean }) {
         </main>
         <Footer />
       </div>
-      <RedlineOverlay enabled={overlayOn} baseline={cloudSha} />
+      <RedlineOverlay enabled={overlayOn} />
     </>
   );
 }
