@@ -1,0 +1,24 @@
+{
+  "name": "redline-monorepo",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w @vedantb/redline && npm run build -w redline-demo",
+    "test": "npm test -w @vedantb/redline",
+    "test:e2e": "npm run build -w @vedantb/redline && playwright test",
+    "dev": "npm run build -w @vedantb/redline && npm run dev -w redline-demo",
+    "typecheck": "npm run typecheck -w @vedantb/redline && npm run typecheck -w redline-demo"
+  },
+  "dependencies": {
+    "convex": "^1.25.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.55.0",
+    "@types/node": "^22.15.0",
+    "typescript": "^5.8.3"
+  }
+}
