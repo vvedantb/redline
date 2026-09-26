@@ -11,7 +11,7 @@ export interface RedlineOverlayProps {
   endpoint?: string;
   /** Force on/off. Default: on outside production builds. */
   enabled?: boolean;
-  /** Diff against this git SHA instead of the pinned baseline (for example, one stored in Convex). */
+  /** Diff against this git SHA instead of the pinned baseline. */
   baseline?: string | null;
   /** Refetch interval in ms. 0 turns polling off. Default 2000. */
   pollInterval?: number;

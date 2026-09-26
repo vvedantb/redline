@@ -13,9 +13,6 @@
     "dev": "npm run build -w @vedantb/redline && npm run dev -w redline-demo",
     "typecheck": "npm run typecheck -w @vedantb/redline && npm run typecheck -w redline-demo"
   },
-  "dependencies": {
-    "convex": "^1.25.0"
-  },
   "devDependencies": {
     "@playwright/test": "^1.55.0",
     "@types/node": "^22.15.0",
