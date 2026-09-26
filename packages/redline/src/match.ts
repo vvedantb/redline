@@ -38,6 +38,7 @@ function innermost<T>(nodes: TaggedNode<T>[], test: (n: TaggedNode<T>) => boolea
  * - Each added/modified line maps to the innermost node whose source range contains it.
  * - A pure deletion between lines n and n+1 maps to the innermost node containing both.
  * - Lines outside any tagged node (imports, helpers) are ignored.
+ * - When an element is entirely new, its tagged children are folded into it.
  * - Nodes in files without changes are never returned.
  */
 export function matchChangedRegions<T>(nodes: TaggedNode<T>[], files: DiffFile[]): ChangedRegion<T>[] {
@@ -63,6 +64,8 @@ export function matchChangedRegions<T>(nodes: TaggedNode<T>[], files: DiffFile[]
     if (file.status === 'deleted') continue;
     const candidates = byFile.get(normalizePath(file.path));
     if (!candidates) continue;
+    const added = new Set(file.hunks.flatMap((h) => h.changedLines));
+    const fileStart = regions.length;
     for (const hunk of file.hunks) {
       for (const line of hunk.changedLines) {
         add(innermost(candidates, (n) => n.startLine <= line && n.endLine >= line), file, hunk, line);
@@ -76,6 +79,21 @@ export function matchChangedRegions<T>(nodes: TaggedNode<T>[], files: DiffFile[]
         );
       }
     }
+    // An element whose every line is new is outlined once, not once per child.
+    const fileRegions = regions.splice(fileStart);
+    const isNew = (n: SourceLocation) => {
+      for (let l = n.startLine; l <= n.endLine; l++) if (!added.has(l)) return false;
+      return true;
+    };
+    const newBlocks = fileRegions.map((r) => r.node).filter(isNew);
+    regions.push(
+      ...fileRegions.filter(
+        (r) =>
+          !newBlocks.some(
+            (b) => b !== r.node && span(b) > span(r.node) && b.startLine <= r.node.startLine && b.endLine >= r.node.endLine,
+          ),
+      ),
+    );
   }
   return regions;
 }

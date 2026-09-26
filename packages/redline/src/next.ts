@@ -15,6 +15,13 @@ type AnyConfig = Record<string, any>;
 type Rewrite = { source: string; destination: string };
 type Rewrites = Rewrite[] | { beforeFiles?: Rewrite[]; afterFiles?: Rewrite[]; fallback?: Rewrite[] };
 
+/** The wrapped config. Fields are optional because a disabled wrapper returns the input unchanged. */
+export type RedlineNextConfig<T> = Omit<T, 'env' | 'webpack' | 'rewrites'> & {
+  env?: Record<string, string>;
+  webpack?: (config: AnyConfig, ctx: AnyConfig) => AnyConfig;
+  rewrites?: () => Promise<any>;
+};
+
 function isEnabled(options: RedlineNextOptions): boolean {
   return options.enabled ?? process.env.NODE_ENV !== 'production';
 }
@@ -29,8 +36,11 @@ export const loaderPath = path.join(__dirname, 'loader.cjs');
  * `NEXT_PUBLIC_REDLINE=1`, and rewrites `/__redline/:action` to your API route.
  * Turbopack is not supported yet: run `next dev --webpack` on Next 16+.
  */
-export function withRedline<T extends AnyConfig>(nextConfig: T = {} as T, options: RedlineNextOptions = {}): T {
-  if (!isEnabled(options)) return nextConfig;
+export function withRedline<T extends AnyConfig>(
+  nextConfig: T = {} as T,
+  options: RedlineNextOptions = {},
+): RedlineNextConfig<T> {
+  if (!isEnabled(options)) return nextConfig as RedlineNextConfig<T>;
   const apiRoute = (options.apiRoute ?? '/api/redline').replace(/\/$/, '');
   const userWebpack = nextConfig.webpack as ((config: AnyConfig, ctx: AnyConfig) => AnyConfig) | undefined;
   const userRewrites = nextConfig.rewrites as (() => Promise<Rewrites> | Rewrites) | undefined;

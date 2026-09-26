@@ -2,7 +2,6 @@
   "name": "@vedantb/redline",
   "version": "0.1.0",
   "description": "Pin a baseline commit and outline changed JSX regions in your running Vite or Next.js app.",
-  "license": "MIT",
   "type": "module",
   "repository": {
     "type": "git",
@@ -42,7 +41,7 @@
   },
   "sideEffects": false,
   "scripts": {
-    "build": "tsup",
+    "build": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsup",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
@@ -69,7 +68,6 @@
     "@babel/types": "^7.28.0",
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",
-    "jsdom": "^26.1.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "tsup": "^8.5.0",
