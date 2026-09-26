@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.redline/
+.env
+.env.local
+.env.*.local
+test-results/
+playwright-report/
+blob-report/
+*.log
+.DS_Store
+convex/_generated/
