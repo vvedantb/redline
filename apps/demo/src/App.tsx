@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { Footer } from './components/Footer';
 import { Header } from './components/Header';
 import { Hero } from './components/Hero';
+import { NotesFeed } from './components/NotesFeed';
 import { RedlineControls } from './components/RedlineControls';
 import { Signup } from './components/Signup';
 import { Stats } from './components/Stats';
@@ -39,6 +40,7 @@ export function App() {
           <Hero />
           <Stats />
           <Signup />
+          <NotesFeed />
         </main>
         <Footer />
       </div>

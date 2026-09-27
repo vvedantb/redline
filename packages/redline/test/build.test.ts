@@ -42,7 +42,7 @@ const deferred = () => {
  * vite package, vite records the worktree files it saw and writes dist.
  */
 function fakeExec(opts: { fail?: (sha: string) => boolean; gate?: Promise<void>; appDir?: string } = {}) {
-  const calls: { cmd: string; args: string[]; cwd: string; env?: NodeJS.ProcessEnv; files?: string[] }[] = [];
+  const calls: { cmd: string; args: string[]; cwd: string; env?: NodeJS.ProcessEnv; files?: string[]; envText?: string }[] = [];
   let worktree = '';
   let running = 0;
   let maxRunning = 0;
@@ -63,6 +63,8 @@ function fakeExec(opts: { fail?: (sha: string) => boolean; gate?: Promise<void>;
       return;
     }
     calls[calls.length - 1].files = [...fs.readdirSync(worktree).map((n) => `/${n}`), ...fs.readdirSync(cwd)].sort();
+    const envFile = path.join(worktree, '.env.local');
+    calls[calls.length - 1].envText = fs.existsSync(envFile) ? fs.readFileSync(envFile, 'utf8') : '';
     running++;
     maxRunning = Math.max(maxRunning, running);
     try {
@@ -287,16 +289,41 @@ describe('BuildManager', () => {
     expect(fake.calls.find((c) => c.cmd === 'npm')?.args).toEqual(['ci']);
   });
 
-  it('copies live env files into the worktree before vite build', async () => {
+  it('copies filtered live env files into the worktree before vite build', async () => {
     // Gitignored in a real app, so never in the worktree.
-    fs.writeFileSync(path.join(root, '.env.local'), 'VITE_API_URL=live\n');
+    fs.writeFileSync(
+      path.join(root, '.env.local'),
+      'VITE_CLERK_PUBLISHABLE_KEY=pk_test_x\nVITE_APP_TITLE=Demo\nVITE_CONVEX_URL=https://happy-animal-123.convex.cloud\nCONVEX_DEPLOY_KEY=x\nSESSION_SECRET=x\n',
+    );
     const fake = fakeExec();
     const builds = new BuildManager({ root, exec: fake.exec, capture: false });
     builds.enqueue(shas[0]);
     await builds.whenIdle();
     expect(builds.get(shas[0])?.status).toBe('ready');
-    expect(fake.calls.find((c) => c.cmd === process.execPath)?.files).toContain('/.env.local');
-    expect(fs.readFileSync(buildPaths(root, shas[0]).log, 'utf8')).toContain('Copied env files: .env.local');
+    const vite = fake.calls.find((c) => c.cmd === process.execPath);
+    expect(vite?.files).toContain('/.env.local');
+    expect(vite?.envText).toContain('VITE_CLERK_PUBLISHABLE_KEY=pk_test_x');
+    expect(vite?.envText).toContain('VITE_APP_TITLE=Demo');
+    expect(vite?.envText).not.toMatch(/CONVEX|SESSION_SECRET/);
+    expect(fs.readFileSync(buildPaths(root, shas[0]).log, 'utf8')).toContain('Copied filtered env files: .env.local (kept 2 keys, stripped 3)');
+  });
+
+  it('strips secret and Convex keys from the vite build environment', async () => {
+    const saved = { ...process.env };
+    Object.assign(process.env, { VITE_CONVEX_URL: 'https://happy-animal-123.convex.cloud', CONVEX_DEPLOY_KEY: 'x', VITE_APP_TITLE: 'Demo' });
+    try {
+      const fake = fakeExec();
+      const builds = new BuildManager({ root, exec: fake.exec, capture: false });
+      builds.enqueue(shas[0]);
+      await builds.whenIdle();
+      const env = fake.calls.find((c) => c.cmd === process.execPath)?.env;
+      expect(env).toMatchObject({ VITE_APP_TITLE: 'Demo', NODE_ENV: 'production', REDLINE: '0' });
+      expect(env?.VITE_CONVEX_URL).toBeUndefined();
+      expect(env?.CONVEX_DEPLOY_KEY).toBeUndefined();
+      expect(env?.PATH).toBe(process.env.PATH);
+    } finally {
+      for (const key of ['VITE_CONVEX_URL', 'CONVEX_DEPLOY_KEY', 'VITE_APP_TITLE']) if (!(key in saved)) delete process.env[key];
+    }
   });
 
   it('copies env files from the git top and the config directory in a monorepo', async () => {
@@ -313,7 +340,9 @@ describe('BuildManager', () => {
     const vite = fake.calls.find((c) => c.cmd === process.execPath);
     expect(vite?.cwd).toBe(path.join(p.worktree, 'apps', 'web'));
     expect(vite?.files).toEqual(expect.arrayContaining(['/.env.local', '.env.local']));
-    expect(fs.readFileSync(p.log, 'utf8')).toContain(`Copied env files: .env.local, ${path.join('apps', 'web', '.env.local')}`);
+    expect(fs.readFileSync(p.log, 'utf8')).toContain(
+      `Copied filtered env files: .env.local (kept 1 key, stripped 0), ${path.join('apps', 'web', '.env.local')} (kept 1 key, stripped 0)`,
+    );
   });
 
   it('builds without env files', async () => {
@@ -439,7 +468,15 @@ describe('build endpoints', () => {
       const index = await get(base);
       expect(index.status).toBe(200);
       expect(index.headers.get('content-type')).toContain('text/html');
-      expect(await index.text()).toContain(`${base}assets/app.js`);
+      const html = await index.text();
+      expect(html).toContain(`${base}assets/app.js`);
+      // Bootstrap first, so fetch is patched before the app's scripts run.
+      expect(html.startsWith('<script src="/__redline/network/bootstrap.js"></script><script src=')).toBe(true);
+      expect(await (await get(`${base}assets/app.js`)).text()).toBe('console.log(1)');
+      const bootstrap = await get('/__redline/network/bootstrap.js');
+      expect(bootstrap.headers.get('content-type')).toContain('javascript');
+      expect(await bootstrap.text()).toContain('installRedlineNetwork(window)');
+      expect(await (await get('/__redline/network/fixtures')).json()).toEqual({ version: 1, entries: [] });
       expect((await get(`${base}assets/app.js`)).headers.get('content-type')).toContain('javascript');
       expect((await get(`${base}some/route`)).status).toBe(200);
       expect((await get(`${base}..%2Fmeta.json`)).status).toBe(404);

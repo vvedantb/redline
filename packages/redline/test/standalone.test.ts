@@ -137,14 +137,37 @@ describe('copyEnvFiles', () => {
     const from = tmp();
     const to = tmp();
     for (const name of ['.env', '.env.local', '.env.development', '.env.production', '.env.staging.local', '.env.example', '.envrc']) {
-      write(path.join(from, name), `${name}=live`);
+      write(path.join(from, name), 'VITE_APP_TITLE=Demo\n');
     }
     fs.mkdirSync(path.join(from, '.env.d.local'));
     write(path.join(to, '.env'), 'committed');
-    expect(copyEnvFiles(from, to)).toEqual(['.env.development', '.env.local', '.env.production', '.env.staging.local']);
+    expect(copyEnvFiles(from, to).map((f) => f.name)).toEqual(['.env.development', '.env.local', '.env.production', '.env.staging.local']);
     expect(fs.readFileSync(path.join(to, '.env'), 'utf8')).toBe('committed');
     expect(fs.existsSync(path.join(to, '.env.example'))).toBe(false);
     expect(copyEnvFiles(path.join(from, 'missing'), to)).toEqual([]);
+  });
+
+  it('writes only allowlisted public keys', () => {
+    const from = tmp();
+    const to = tmp();
+    write(
+      path.join(from, '.env.local'),
+      [
+        'VITE_CLERK_PUBLISHABLE_KEY=pk_test_x',
+        'VITE_APP_TITLE=Demo',
+        'VITE_CONVEX_URL=https://happy-animal-123.convex.cloud',
+        'CONVEX_DEPLOY_KEY=dev:happy-animal-123|secret',
+        'CONVEX_DEPLOYMENT=dev:happy-animal-123',
+        'CLERK_SECRET_KEY=sk_test_x',
+        'DATABASE_URL=postgres://x',
+        '',
+      ].join('\n'),
+    );
+    expect(copyEnvFiles(from, to)).toEqual([{ name: '.env.local', kept: 2, stripped: 5 }]);
+    const copied = fs.readFileSync(path.join(to, '.env.local'), 'utf8');
+    expect(copied).toContain('VITE_CLERK_PUBLISHABLE_KEY=pk_test_x\n');
+    expect(copied).toContain('VITE_APP_TITLE=Demo\n');
+    for (const gone of ['CONVEX', 'convex.cloud', 'sk_test', 'DATABASE_URL', 'secret']) expect(copied).not.toContain(gone);
   });
 });
 
@@ -159,7 +182,19 @@ describe('snapshotEnv', () => {
       PORT: '3000',
       NODE_ENV: 'development',
     });
-    expect(env).toEqual({ DATABASE_URL: 'postgres://x', NODE_ENV: 'production', REDLINE: '0', NEXT_TELEMETRY_DISABLED: '1' });
+    expect(env).toEqual({ NODE_ENV: 'production', REDLINE: '0', NEXT_TELEMETRY_DISABLED: '1' });
+  });
+
+  it('drops secret and Convex keys but keeps public and tool variables', () => {
+    const env = snapshotEnv({
+      PATH: '/usr/bin',
+      NEXT_PUBLIC_APP_NAME: 'Demo',
+      NEXT_PUBLIC_CONVEX_URL: 'https://happy-animal-123.convex.cloud',
+      NEXT_PUBLIC_BACKEND: 'https://happy-animal-123.convex.site',
+      CONVEX_DEPLOY_KEY: 'x',
+      CLERK_SECRET_KEY: 'sk_test_x',
+    });
+    expect(env).toEqual({ PATH: '/usr/bin', NEXT_PUBLIC_APP_NAME: 'Demo', NODE_ENV: 'production', REDLINE: '0', NEXT_TELEMETRY_DISABLED: '1' });
   });
 });
 
@@ -209,6 +244,11 @@ function fakeServers(opts: { listen?: boolean; exitAt?: number } = {}) {
     const listeners: ((code: number | null) => void)[] = [];
     const exit = (code: number | null) => listeners.splice(0).forEach((l) => l(code));
     const server = http.createServer((req, res) => {
+      if (req.url?.endsWith('/page.html')) {
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        res.end('<!doctype html><html><head><title>x</title></head><body></body></html>');
+        return;
+      }
       res.setHeader('Content-Type', 'text/plain');
       res.end(`served ${req.url} cwd=${input.cwd} redline=${input.env.REDLINE}`);
     });
@@ -313,7 +353,7 @@ describe('proxyRequest', () => {
  * records what it saw and writes `.next/standalone` mirrored from the git top level.
  */
 function fakeNextExec(top: string, opts: { fail?: boolean } = {}) {
-  const builds: { cwd: string; args: string[]; env?: NodeJS.ProcessEnv; config: string; files: string[] }[] = [];
+  const builds: { cwd: string; args: string[]; env?: NodeJS.ProcessEnv; config: string; files: string[]; envText: string }[] = [];
   const cmds: string[] = [];
   const exec: ExecFn = async (cmd, args, { cwd, env, log }) => {
     cmds.push(cmd === process.execPath ? `node ${args[1]}` : `${cmd} ${args[0]}`);
@@ -333,6 +373,7 @@ function fakeNextExec(top: string, opts: { fail?: boolean } = {}) {
       env,
       config: config ? fs.readFileSync(config, 'utf8') : '',
       files: [...fs.readdirSync(worktreeTop).map((n) => `/${n}`), ...fs.readdirSync(cwd)].sort(),
+      envText: [worktreeTop, cwd].map((d) => (fs.existsSync(path.join(d, '.env.local')) ? fs.readFileSync(path.join(d, '.env.local'), 'utf8') : '')).join(''),
     });
     if (opts.fail) {
       log('Type error: nope\n');
@@ -363,8 +404,8 @@ function nextRepo(app: string): { top: string; appDir: string; shas: string[] } 
     git(top, 'commit', '-q', '-m', `v${i}`);
     shas.push(git(top, 'rev-parse', 'HEAD'));
   }
-  write(path.join(top, '.env.local'), 'DATABASE_URL=live\n');
-  if (app) write(path.join(appDir, '.env.local'), 'AUTH_SECRET=live\n');
+  write(path.join(top, '.env.local'), 'DATABASE_URL=live\nNEXT_PUBLIC_CONVEX_URL=https://happy-animal-123.convex.cloud\n');
+  if (app) write(path.join(appDir, '.env.local'), 'AUTH_SECRET=live\nNEXT_PUBLIC_APP_NAME=Demo\n');
   return { top, appDir, shas };
 }
 
@@ -400,6 +441,8 @@ describe('Next.js History builds', () => {
       expect(build.config).toContain(`const basePath = "/__redline/h/${shas[0]}"`);
       expect(build.config).toContain(`const tracingRoot = ${JSON.stringify(top)}`);
       expect(build.files).toContain('.env.local');
+      // Filtered: no secrets and no Convex URL reach the snapshot.
+      expect(build.envText).not.toMatch(/DATABASE_URL|CONVEX/);
 
       const serverDir = path.join(p.standalone, '.redline', 'worktrees', shas[0]);
       expect(fs.existsSync(path.join(serverDir, 'server.js'))).toBe(true);
@@ -470,6 +513,10 @@ describe('Next.js History builds', () => {
       expect(await (await get(`${base}_next/static/chunks/a.js`)).text()).toContain(`served ${base}_next/static/chunks/a.js`);
       expect(servers.started).toHaveLength(1);
       expect(servers.started[0].script).toBe(path.join(serverDir, 'server.js'));
+      // HTML pages get the read-only network bootstrap; other responses are unchanged.
+      expect(await (await get(`${base}page.html`)).text()).toContain('<head><script src="/__redline/network/bootstrap.js"></script><title>');
+      expect(await (await get('/api/redline/network/bootstrap.js')).text()).toContain('installRedlineNetwork(window)');
+      expect(await (await get('/__redline/network/fixtures')).json()).toEqual({ version: 1, entries: [] });
 
       expect((await get(`/api/redline/h/${shas[0]}/..%2F..%2Fmeta.json`)).status).toBe(404);
       expect((await get(`/api/redline/h/${shas[1]}/`)).status).toBe(404);
@@ -529,6 +576,8 @@ describe('Next.js History builds', () => {
       expect(fake.builds[0].cwd).toBe(path.join(p.worktree, 'apps', 'web'));
       // Env files from the top level and from the app directory.
       expect(fake.builds[0].files).toEqual(expect.arrayContaining(['/.env.local', '.env.local']));
+      expect(fake.builds[0].envText).toContain('NEXT_PUBLIC_APP_NAME=Demo');
+      expect(fake.builds[0].envText).not.toMatch(/AUTH_SECRET|DATABASE_URL|CONVEX/);
       expect(fs.readFileSync(path.join(appDir, 'next.config.mjs'), 'utf8')).toBe('export default { reactStrictMode: true };\n');
 
       const serverDir = path.join(p.standalone, '.redline', 'worktrees', shas[0], 'apps', 'web');
