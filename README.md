@@ -11,6 +11,7 @@ Package: `@vedantb/redline`
 3. `<RedlineOverlay />` fetches the diff, finds tagged elements, and maps each changed line to the innermost element whose source range contains it. It draws a fixed-position outline over each match.
 4. Each outline has a small label button. Click it to open a side panel with the file path, line and hunk text.
 5. A floating toolbar shows the status. Use it to hide outlines or open the commit history.
+6. In the history panel, click a commit to see the app as it was. Redline builds that commit in a separate git worktree and shows the build in an iframe.
 
 Redline does not change your production build. The transform and endpoints run only in dev unless you set `enabled: true`.
 
@@ -58,6 +59,9 @@ Plugin options:
 | `enabled` | `true` in `vite dev`, `false` in `vite build` | `false` turns off tagging and makes `/__redline/*` report `enabled: false`. `true` also tags production builds and serves the endpoints from `vite preview`. |
 | `baselineFile` | `<root>/.redline/baseline.json` | Where the pinned baseline is stored. |
 | `extensions` | `['tsx', 'jsx', 'ts', 'js', 'css']` | File types included in git diffs. |
+| `history` | `{ maxBuilds: 5, thumbnails: true }` | History builds. `maxBuilds` is how many ready builds stay on disk. `thumbnails: false` skips Playwright screenshots. `false` turns History builds off. |
+
+Set `REDLINE=0` in the environment to turn Redline off whatever `enabled` says. History builds use this.
 
 ## Next.js
 
@@ -140,11 +144,11 @@ These helpers also mirror the baseline to `localStorage` (`redline:baseline`). I
 
 ### Per-request override
 
-`GET /__redline/diff?baseline=<sha>` diffs against a given commit without changing the pinned file. `<RedlineOverlay baseline={sha} />` and history view-mode use this.
+`GET /__redline/diff?baseline=<sha>` diffs against a given commit without changing the pinned file. `<RedlineOverlay baseline={sha} />` uses this.
 
 ## Endpoints
 
-All endpoints are read-only except `pin` and `clear`, which only write or delete `.redline/baseline.json`. None of them run `git checkout`, `git restore`, `git reset` or anything else that changes your working tree.
+`pin` and `clear` only write or delete `.redline/baseline.json`. `build` only writes under `.redline/` and adds git worktrees there. None of the endpoints run `git checkout`, `git restore`, `git reset` or anything else that changes your working tree.
 
 | Endpoint | Returns |
 | --- | --- |
@@ -154,6 +158,14 @@ All endpoints are read-only except `pin` and `clear`, which only write or delete
 | `GET /__redline/file?path=<path>[&ref=<ref>]` | `{ path, ref, content }` for a file at a commit (default `HEAD`). Uses `git show`. `path` is relative to the project root and must stay inside it. Only files with a configured extension can be read. |
 | `POST /__redline/pin` | Pins a baseline (see above). |
 | `POST /__redline/clear` | Removes the pin. |
+| `POST /__redline/build` `{ "sha": "<ref>" }` | Queues a production build of a commit. Returns the existing job if it is queued, building or ready. A failed job is queued again. Answers `202` with `{ build }`. |
+| `GET /__redline/build[?sha=<ref>]` | One job as `{ build }`, or all jobs as `{ builds }`, newest first. Jobs that are building or failed include `logTail`, the last lines of the log. |
+| `GET /__redline/build/log?sha=<ref>` | The full `build.log`, as `text/plain`. |
+| `GET /__redline/build/thumb?sha=<sha>` | The thumbnail PNG, if one was captured. |
+| `DELETE /__redline/build?sha=<ref>` | Cancels a queued or running build and deletes its files. |
+| `GET /__redline/h/<sha>/*` | Static files of a ready build. Paths without an extension fall back to `index.html`. |
+
+Build endpoints are Vite only for now. On Next.js they answer `501`.
 
 From the browser, `getLog({ limit })` wraps `/__redline/log`.
 
@@ -182,26 +194,56 @@ A floating toolbar sits bottom-left by default. It shows how many regions change
 
 The position and outline visibility are saved in `localStorage` under `redline:toolbar`. This is separate from `redlineDisabled`: that flag, and the other flags below, remove the whole overlay, toolbar included.
 
-### History and view-mode
+### History builds
 
-The history panel lists recent commits, newest first, from `GET /__redline/log`. Click a commit to enter view-mode. The overlay then diffs the working tree against that commit (`/__redline/diff?baseline=<sha>`) and outlines what changed since it. The toolbar shows "Viewing <sha>". Click **Latest**, in the toolbar or at the top of the panel, to go back to the pinned baseline (or no baseline, if none is pinned).
+The history panel lists recent commits, newest first, from `GET /__redline/log`. Click a commit to see the app as it was at that commit:
 
-View-mode is read-only:
+1. Redline queues a build of the commit (`POST /__redline/build`). The row and the main view show **Queued**, then **Building** with the last lines of the log.
+2. When the build is **Ready**, an iframe loads `/__redline/h/<sha>/` over the page. The toolbar and history panel stay on top, outside the iframe.
+3. If the build **Failed**, the row shows the error and log tail, with a **Retry** button.
+4. Click **Latest**, in the toolbar or at the top of the panel, to hide the iframe and go back to the live app.
 
-- It does not check out, restore, reset or revert anything. Your files and branch stay as they are.
-- It does not change `.redline/baseline.json`. Viewing a commit is not pinning it. Use `pinBaseline({ sha })` to pin.
-- It is held in memory, so a page reload returns to Latest.
+Outlines are drawn on the live app only. They are hidden while you view a commit. Viewing a commit does not pin it and does not change `.redline/baseline.json`. The choice is held in memory, so a page reload returns to Latest.
 
-Source-map drift: view-mode does not show the page as it was at that commit. The DOM still comes from your running code, and the `data-redline-source` tags point at current source lines. Outlines mark current elements whose source differs from the commit. So:
+How a build runs (one at a time):
 
-- elements that existed at the commit but have since been deleted have nothing to outline. Their hunks appear only as pure deletions on a surrounding element.
-- for older commits, hunks are larger and outlines fold into bigger parent elements.
-- if the running page is stale (for example, hot reload has not caught up with files on disk), tags and diff lines can disagree and outlines may land on the wrong element.
+1. `git worktree add --detach .redline/worktrees/<sha> <sha>`. Your working tree and branch are never checked out, restored or reset.
+2. Dependencies: if the lockfile at that commit matches the one on disk, Redline links your `node_modules` into the worktree. Otherwise it runs `npm ci` (or `pnpm install --frozen-lockfile`, `yarn install`, `bun install`) in the worktree.
+3. `vite build --base /__redline/h/<sha>/ --outDir .redline/builds/<sha>/dist`, with `REDLINE=0` and `NODE_ENV=production`. Tagging and the overlay are off in the build. The overlay also stays off on any page under `/__redline/h/`, even with `enabled={true}`.
+4. The worktree is removed, whether the build worked or not.
+5. If Playwright and a Chromium browser are installed, Redline serves the build on a throwaway localhost port and saves a 1280×800 screenshot as the thumbnail. If not, it skips this step; the build still works.
+
+Job states: `queued` → `building` → `ready` or `failed`. Redline keeps the 5 most recently viewed ready builds (`history.maxBuilds`) and deletes older ones. Builds cut short by a dev server restart show as failed; click Retry.
+
+Disk layout (`.redline/` should be in `.gitignore`):
+
+```
+.redline/
+  baseline.json
+  builds/<sha>/meta.json     sha, shortSha, status, framework, queuedAt, startedAt, finishedAt, basePath, error
+  builds/<sha>/build.log     output of every step
+  builds/<sha>/dist/         the static build, served at /__redline/h/<sha>/
+  snapshots/<sha>/thumb.png  thumbnail, when Playwright is available
+  worktrees/<sha>/           only while a build runs
+```
+
+To try it:
+
+```sh
+npm install
+npm run dev                          # demo at http://localhost:5173
+# open the page, click History in the toolbar, then click a commit
+curl -X POST localhost:5173/__redline/build -H 'content-type: application/json' -d '{"sha":"HEAD~1"}'
+curl localhost:5173/__redline/build  # watch the job move to ready
+```
+
+Next.js: History builds are not supported yet. A follow-up will run `next build` with `basePath` and serve the static export, or run `next start` for apps that need a server. Until then, the build endpoints answer `501` and a Next job fails with a clear message.
 
 The overlay is off when any of these is true:
 
 - `enabled={false}` on the component, or `enabled: false` in the plugin
 - the URL has `?redline=0`
+- the page is a History build under `/__redline/h/`
 - the user has `prefers-reduced-motion: reduce` (pass `respectReducedMotion={false}` to ignore this)
 - `localStorage.redlineDisabled === '1'` (`?redline=1` overrides this flag)
 - it is a production build and `enabled` is not `true`
@@ -247,7 +289,7 @@ The E2E suite tests the package on its own demo. It needs the Vite dev server, b
 - pinning `HEAD` from the UI stores the git SHA
 - `?redline=0`, reduced motion, and the overlay toggle each turn the overlay off
 - the toolbar hides and shows outlines and restores its saved position after a reload
-- choosing a commit in the history panel enters view-mode without pinning, and **Latest** leaves it
+- choosing a commit in the history panel builds it, shows it in an iframe without outlines or pinning, and **Latest** returns to the live app with outlines
 
 The suite is local only. It needs no auth, backend or credentials. CI runs the same commands on Node 22 (`.github/workflows/ci.yml`).
 
@@ -262,6 +304,7 @@ e2e/               Playwright tests and baseline fixtures
 ## Limits
 
 - Only JSX host elements are tagged. Elements created with `React.createElement` or rendered by third-party components in `node_modules` are not.
-- History view-mode outlines can drift for old commits (see "History and view-mode").
+- History builds are Vite only. They need your dependencies to build that commit. In a monorepo where the app imports a workspace package that is built from source (like this repo's demo), linking `node_modules` uses the current build of that package, and a fresh install may fail if the package's build output is not committed.
+- History builds of client-side routers need the router to respect Vite's `base` (`import.meta.env.BASE_URL`).
 - The toolbar can be moved with a pointer only. There is no keyboard control for its position.
-- The endpoints run read-only `git` commands in the project root. They are meant for local dev servers and must not be exposed publicly.
+- The endpoints run `git` commands and builds in the project root. They are meant for local dev servers and must not be exposed publicly.

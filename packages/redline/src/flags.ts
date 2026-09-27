@@ -13,6 +13,8 @@ export interface OverlayFlagInput {
   respectReducedMotion?: boolean;
   /** Whether this is a production build. */
   production?: boolean;
+  /** Whether the page is a History build served under `/__redline/h/<sha>/`. */
+  historyFrame?: boolean;
 }
 
 export const STORAGE_DISABLED_KEY = 'redlineDisabled';
@@ -28,12 +30,13 @@ function queryFlag(search: string | undefined): '0' | '1' | null {
 /**
  * Decide whether outlines should be drawn.
  *
- * Off when any of: `enabled: false`, the server reports disabled, `?redline=0`,
+ * Off when any of: `enabled: false`, the page is a History build, the server reports disabled, `?redline=0`,
  * prefers-reduced-motion (unless opted out), or `localStorage.redlineDisabled === '1'`
  * (which `?redline=1` overrides). Production builds are off unless `enabled: true`.
  */
 export function isOverlayEnabled(input: OverlayFlagInput): boolean {
   if (input.enabled === false) return false;
+  if (input.historyFrame) return false;
   if (input.serverEnabled === false) return false;
   if (input.production && input.enabled !== true) return false;
   const query = queryFlag(input.search);

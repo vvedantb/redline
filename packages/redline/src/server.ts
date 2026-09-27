@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createTwoFilesPatch } from 'diff';
+import type { BuildManager } from './build';
 import { parseUnifiedDiff } from './diff';
 import { normalizePath } from './source';
 import type { CommitInfo, DiffFile, DiffResponse, StoredBaseline } from './types';
@@ -16,13 +17,18 @@ export interface RedlineServerOptions {
   extensions?: string[];
   /** When false every endpoint reports `enabled: false`. */
   enabled?: boolean;
+  /** Per-commit History builds. Without it `/__redline/build` answers 501. */
+  builds?: BuildManager;
 }
 
 export const DEFAULT_EXTENSIONS = ['tsx', 'jsx', 'ts', 'js', 'css'];
 
 export interface RedlineResponse {
   status: number;
+  /** Sent as JSON unless `text` is set. */
   body: unknown;
+  /** Sent as `text/plain` instead of `body`. */
+  text?: string;
 }
 
 function git(root: string, args: string[]): string {
@@ -206,9 +212,45 @@ function publicBaseline(b: StoredBaseline | null) {
   return { mode: b.mode, sha: b.sha, notes: b.notes, pinnedAt: b.pinnedAt, files: b.files ? Object.keys(b.files) : undefined };
 }
 
+function bodySha(body: unknown): string | null {
+  return body && typeof body === 'object' && 'sha' in body && typeof body.sha === 'string' ? body.sha : null;
+}
+
+/** `/__redline/build` and `/__redline/build/log`. Builds run in worktrees, never in the main tree. */
+function handleBuild(
+  opts: RedlineServerOptions,
+  action: string,
+  method: string,
+  query: URLSearchParams,
+  body: unknown,
+): RedlineResponse {
+  const enabled = opts.enabled !== false;
+  if (!enabled) return { status: 403, body: { enabled, error: 'Redline is disabled' } };
+  const builds = opts.builds;
+  if (!builds) return { status: 501, body: { enabled, error: 'History builds are not available on this server' } };
+  const ref = method === 'POST' ? bodySha(body) : query.get('sha');
+
+  if (action === 'build/log') {
+    if (!ref) return { status: 400, body: { enabled, error: 'Missing sha' } };
+    const file = builds.logFile(resolveCommit(opts.root, ref));
+    if (!file) return { status: 404, body: { enabled, error: 'No build log for this commit' } };
+    return { status: 200, body: null, text: fs.readFileSync(file, 'utf8') };
+  }
+  if (method === 'GET') {
+    if (!ref) return { status: 200, body: { enabled, builds: builds.list() } };
+    return { status: 200, body: { enabled, build: builds.get(resolveCommit(opts.root, ref)) } };
+  }
+  if (!ref) return { status: 400, body: { enabled, error: 'Missing sha' } };
+  const sha = resolveCommit(opts.root, ref);
+  if (method === 'POST') return { status: 202, body: { enabled, build: builds.enqueue(sha) } };
+  if (method === 'DELETE') return { status: 200, body: { enabled, build: null, removed: builds.remove(sha) } };
+  return { status: 405, body: { error: 'Use GET, POST or DELETE' } };
+}
+
 /**
  * Framework-agnostic request handler for `/__redline/<action>`.
- * Actions: `diff`, `baseline`, `log`, `file` (GET), `pin`, `clear` (POST).
+ * Actions: `diff`, `baseline`, `log`, `file` (GET), `pin`, `clear` (POST),
+ * `build` (GET, POST, DELETE) and `build/log` (GET).
  * `log` and `file` only read git history; nothing here checks out or resets the working tree.
  */
 export function handleRedlineRequest(
@@ -254,6 +296,9 @@ export function handleRedlineRequest(
         if (method !== 'POST' && method !== 'DELETE') return { status: 405, body: { error: 'Use POST' } };
         clearStoredBaseline(opts);
         return { status: 200, body: { enabled, headSha: getHeadSha(opts.root), baseline: null } };
+      case 'build':
+      case 'build/log':
+        return handleBuild(opts, action, method, query, body);
       default:
         return { status: 404, body: { error: `Unknown Redline action: ${action}` } };
     }

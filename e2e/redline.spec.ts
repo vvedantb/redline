@@ -94,8 +94,8 @@ test('re-pinning to the current content clears outlines', async ({ page, request
 
 test('pinning HEAD through the UI stores the git SHA', async ({ page }) => {
   await page.goto('/');
+  await expect(page.getByTestId('head-sha')).toHaveText(/^[0-9a-f]{12}$/);
   const head = (await page.getByTestId('head-sha').textContent())!.trim();
-  expect(head).toMatch(/^[0-9a-f]{12}$/);
   await page.getByRole('button', { name: 'Pin baseline (HEAD)' }).click();
   await expect(page.getByTestId('pinned-sha')).toHaveText(head);
 });
@@ -162,27 +162,52 @@ test('the toolbar hides outlines and remembers its position', async ({ page, req
   await page.evaluate(() => localStorage.removeItem('redline:toolbar'));
 });
 
-test('history view-mode diffs against a commit without pinning it', async ({ page, request }) => {
+test('history builds a commit, shows it in an iframe, and Latest returns to the live app', async ({ page, request }) => {
+  test.setTimeout(180_000);
+  await pinCommitA(request);
   await page.goto('/?redline=1');
-  await page.getByRole('toolbar', { name: 'Redline' }).getByRole('button', { name: 'History' }).click();
+  await expect.poll(async () => (await outlinedSources(page)).length).toBeGreaterThan(0);
+
+  const toolbar = page.getByRole('toolbar', { name: 'Redline' });
+  await toolbar.getByRole('button', { name: 'History' }).click();
   const panel = page.getByRole('dialog', { name: 'Redline history' });
-  const commits = panel.locator('[data-redline-commit]:not([data-redline-commit="latest"])');
-  await expect(commits.first()).toBeVisible();
-  const target = commits.last();
+  const target = panel.locator('[data-redline-commit]:not([data-redline-commit="latest"])').first();
+  await expect(target).toBeVisible();
   const sha = (await target.getAttribute('data-redline-commit'))!;
   const short = (await target.locator('code').textContent())!;
+  // Start from a clean build so the queue runs.
+  await request.delete(`/__redline/build?sha=${sha}`);
 
-  const diffRequest = page.waitForRequest((r) => r.url().includes(`/__redline/diff?baseline=${sha}`));
   await target.click();
-  await diffRequest;
   await expect(page.locator('[data-redline-viewing]')).toHaveText(`Viewing ${short}`);
   await expect(target).toHaveAttribute('aria-current', 'true');
+  await expect(target.locator('[data-redline-build]')).toHaveAttribute('data-redline-build', /queued|building|ready/);
+  // Outlines are for the live app only.
+  await expect(outlines(page)).toHaveCount(0);
 
+  const frame = page.locator(`[data-redline-frame="${sha}"]`);
+  await expect(frame).toBeVisible({ timeout: 150_000 });
+  await expect(frame).toHaveAttribute('src', `/__redline/h/${sha}/`);
+  await expect(target.locator('[data-redline-build]')).toHaveAttribute('data-redline-build', 'ready');
+  const inner = page.frameLocator(`[data-redline-frame="${sha}"]`);
+  await expect(inner.getByTestId('hero')).toBeVisible();
+  // The build has no tags and no nested overlay; the toolbar stays outside the iframe.
+  await expect(inner.locator('[data-redline-source]')).toHaveCount(0);
+  await expect(inner.locator('[data-redline-toolbar]')).toHaveCount(0);
+  await expect(toolbar).toBeVisible();
+  await expect(page.locator('[data-redline-status]')).toContainText(`build of ${short} ready`);
+
+  const job = await (await request.get(`/__redline/build?sha=${sha}`)).json();
+  expect(job.build).toMatchObject({ sha, status: 'ready', framework: 'vite' });
   // Viewing is not pinning.
   const state = await (await request.get('/__redline/baseline')).json();
-  expect(state.baseline).toBeNull();
+  expect(state.baseline.mode).toBe('content');
 
-  await page.getByRole('toolbar', { name: 'Redline' }).getByRole('button', { name: 'Latest' }).click();
+  await toolbar.getByRole('button', { name: 'Latest' }).click();
+  await expect(frame).toHaveCount(0);
   await expect(page.locator('[data-redline-viewing]')).toHaveCount(0);
-  await expect(page.locator('[data-redline-status]')).toContainText('no baseline pinned');
+  await expect.poll(async () => (await outlinedSources(page)).length).toBeGreaterThan(0);
+  await expect(page.locator('[data-redline-status]')).toContainText('changed region');
+
+  await request.delete(`/__redline/build?sha=${sha}`);
 });

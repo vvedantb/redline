@@ -68,3 +68,39 @@ export interface LogResponse {
   headSha: string | null;
   commits: CommitInfo[];
 }
+
+export type BuildFramework = 'vite' | 'next';
+
+/** Build job lifecycle: `queued` → `building` → `ready` or `failed`. */
+export type BuildStatus = 'queued' | 'building' | 'ready' | 'failed';
+
+/** Written to `.redline/builds/<sha>/meta.json`. */
+export interface BuildMeta {
+  sha: string;
+  shortSha: string;
+  status: BuildStatus;
+  framework: BuildFramework;
+  queuedAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  /** Where the build is served, e.g. `/__redline/h/<sha>/`. */
+  basePath: string;
+  error?: string;
+}
+
+export interface BuildJob extends BuildMeta {
+  /** Last lines of `build.log` while building or after a failure. */
+  logTail?: string[];
+  /** `pending` while Playwright captures `.redline/snapshots/<sha>/thumb.png`, `ready` once it exists. */
+  thumbnail: 'none' | 'pending' | 'ready';
+}
+
+export interface BuildListResponse {
+  enabled: boolean;
+  builds: BuildJob[];
+}
+
+export interface BuildResponse {
+  enabled: boolean;
+  build: BuildJob | null;
+}
