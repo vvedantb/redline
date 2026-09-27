@@ -297,11 +297,14 @@ describe('BuildManager', () => {
     expect(builds.get(shas[0])).toMatchObject({ status: 'failed', error: expect.stringMatching(/Interrupted/) });
   });
 
-  it('fails Next.js builds with a clear message', async () => {
-    const builds = new BuildManager({ root, exec: fakeExec().exec, capture: false, framework: 'next' });
+  it('fails a Next.js build fast when the commit has no Next.js app', async () => {
+    const fake = fakeExec();
+    const builds = new BuildManager({ root, exec: fake.exec, capture: false, framework: 'next' });
     builds.enqueue(shas[0]);
     await builds.whenIdle();
-    expect(builds.get(shas[0])).toMatchObject({ status: 'failed', framework: 'next', error: expect.stringMatching(/Vite only/) });
+    expect(builds.get(shas[0])).toMatchObject({ status: 'failed', framework: 'next', error: expect.stringMatching(/No Next.js app.*appDir/) });
+    // Nothing was installed or built.
+    expect(fake.calls.map((c) => c.cmd)).toEqual(['git']);
   });
 
   it('reports the thumbnail as pending while capturing, then ready', async () => {

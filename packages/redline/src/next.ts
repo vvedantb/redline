@@ -1,8 +1,12 @@
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
+import { BuildManager, DEFAULT_MAX_READY } from './build';
+import { ENDPOINT } from './paths';
 import { handleRedlineRequest, DEFAULT_EXTENSIONS, type RedlineServerOptions } from './server';
+import { historyTarget, proxyRequest } from './standalone';
 import { TRANSFORM_FILE } from './transform';
+import type { RedlineHistoryOptions } from './types';
 
 export interface RedlineNextOptions {
   /** Force on/off. Default: on when NODE_ENV !== 'production'. */
@@ -11,6 +15,21 @@ export interface RedlineNextOptions {
   apiRoute?: string;
   baselineFile?: string;
   extensions?: string[];
+}
+
+export interface RedlineNextHistoryOptions extends RedlineHistoryOptions {
+  /**
+   * The Next.js app, relative to `root`. Only needed when `root` is not the app directory,
+   * for example `apps/web` when `root` is the top of a monorepo.
+   */
+  appDir?: string;
+}
+
+export interface RedlineHandlerOptions extends RedlineNextOptions {
+  /** Project root. `.redline/` lives here. Default `process.cwd()`, which is the app directory under `next dev`. */
+  root?: string;
+  /** Per-commit History builds (`output: 'standalone'`). `false` turns them off. */
+  history?: RedlineNextHistoryOptions | false;
 }
 
 type AnyConfig = Record<string, any>;
@@ -26,8 +45,9 @@ export type RedlineNextConfig<T> = Omit<T, 'env' | 'webpack' | 'rewrites' | 'tur
   experimental?: AnyConfig;
 };
 
+/** `REDLINE=0` turns Redline off whatever `enabled` says. History snapshot builds use it. */
 function isEnabled(options: RedlineNextOptions): boolean {
-  return options.enabled ?? process.env.NODE_ENV !== 'production';
+  return process.env.REDLINE !== '0' && (options.enabled ?? process.env.NODE_ENV !== 'production');
 }
 
 /** Absolute path to the webpack loader that adds `data-redline-source`. */
@@ -76,7 +96,7 @@ export function mergeTurbopackRules(rules: AnyConfig | undefined, root: string):
  * In dev it tags JSX host elements under both bundlers: a Turbopack rule (`turbopack.rules`
  * on Next 15.3+, `experimental.turbo.rules` before that) and a webpack pre-loader for
  * `next dev --webpack`. Both use the same loader. It also sets `NEXT_PUBLIC_REDLINE=1`
- * and rewrites `/__redline/:action` to your API route.
+ * and rewrites `/__redline/:path*` to your API route, History previews included.
  */
 export function withRedline<T extends AnyConfig>(
   nextConfig: T = {} as T,
@@ -86,7 +106,7 @@ export function withRedline<T extends AnyConfig>(
   const apiRoute = (options.apiRoute ?? '/api/redline').replace(/\/$/, '');
   const userWebpack = nextConfig.webpack as ((config: AnyConfig, ctx: AnyConfig) => AnyConfig) | undefined;
   const userRewrites = nextConfig.rewrites as (() => Promise<Rewrites> | Rewrites) | undefined;
-  const ours: Rewrite[] = [{ source: '/__redline/:action', destination: `${apiRoute}/:action` }];
+  const ours: Rewrite[] = [{ source: `${ENDPOINT}/:path*`, destination: `${apiRoute}/:path*` }];
   const root = process.cwd();
   // Follow the user's key if they already set one, otherwise pick by Next version.
   const legacy =
@@ -127,45 +147,115 @@ export function withRedline<T extends AnyConfig>(
   };
 }
 
+declare global {
+  // One BuildManager per app, shared across route module reloads in `next dev`.
+  var __redlineBuilds: Map<string, BuildManager> | undefined;
+}
+
+function sharedBuilds(root: string, history: RedlineNextHistoryOptions): BuildManager {
+  const configDir = path.resolve(root, history.appDir ?? '.');
+  const key = `${path.resolve(root)}\0${configDir}`;
+  const registry = (globalThis.__redlineBuilds ??= new Map());
+  let builds = registry.get(key);
+  if (!builds) {
+    builds = new BuildManager({
+      root,
+      configDir,
+      framework: 'next',
+      maxReady: history.maxBuilds ?? DEFAULT_MAX_READY,
+      capture: history.thumbnails === false ? false : undefined,
+    });
+    registry.set(key, builds);
+  }
+  return builds;
+}
+
 /**
- * Route handlers for the App Router. Put this in `app/api/redline/[action]/route.ts`:
+ * The Redline action in a request path: what follows `apiRoute` (after a rewrite) or
+ * `/__redline` (before one). History paths (`h/<sha>/...`) keep their trailing slash.
+ */
+export function redlineAction(pathname: string, apiRoute = '/api/redline'): string {
+  const route = apiRoute.replace(/\/$/, '');
+  for (const prefix of [`${route}/`, `${ENDPOINT}/`]) {
+    if (!pathname.startsWith(prefix)) continue;
+    const rest = pathname.slice(prefix.length);
+    return rest.startsWith('h/') ? rest : rest.replace(/\/$/, '');
+  }
+  return pathname.split('/').filter(Boolean).pop() ?? '';
+}
+
+const plain = (status: number, text: string) =>
+  new Response(text, { status, headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' } });
+
+/**
+ * Reverse-proxy `/__redline/h/<sha>/*` to the standalone server of a ready build. The snapshot
+ * was built with `basePath: /__redline/h/<sha>`, so the path is forwarded unchanged.
+ */
+async function serveHistory(opts: RedlineServerOptions, request: Request, action: string): Promise<Response> {
+  const target = opts.enabled !== false ? historyTarget(action) : null;
+  if (!target || !opts.builds) return plain(404, 'No ready build for this commit');
+  let origin: string | null;
+  try {
+    origin = await opts.builds.serverFor(target.sha);
+  } catch (err) {
+    return plain(502, `The History server did not start: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (!origin) return plain(404, 'No ready build for this commit');
+  return proxyRequest(request, origin, target.path + new URL(request.url).search);
+}
+
+function serveThumbnail(opts: RedlineServerOptions, url: URL): Response {
+  const sha = url.searchParams.get('sha') ?? '';
+  const file = opts.enabled !== false ? opts.builds?.thumbnailFile(sha) : null;
+  if (!file) return plain(404, 'Not found');
+  return new Response(new Uint8Array(fs.readFileSync(file)), { headers: { 'Content-Type': 'image/png', 'Cache-Control': 'no-store' } });
+}
+
+/** Handle one App Router request for `/__redline/*`. `createRedlineHandler` wraps this. */
+export async function handleRedlineNextRequest(request: Request, opts: RedlineServerOptions, apiRoute?: string): Promise<Response> {
+  const url = new URL(request.url);
+  const action = redlineAction(url.pathname, apiRoute);
+  if (action.startsWith('h/')) return serveHistory(opts, request, action);
+  if (action === 'build/thumb') return serveThumbnail(opts, url);
+  let body: unknown = {};
+  if (request.method === 'POST') {
+    const text = await request.text();
+    try {
+      body = text.trim() ? JSON.parse(text) : {};
+    } catch {
+      return Response.json({ error: 'Invalid JSON body' }, { status: 400 });
+    }
+  }
+  const res = handleRedlineRequest(opts, action, request.method, url.searchParams, body);
+  if (res.text !== undefined) return plain(res.status, res.text);
+  return Response.json(res.body, { status: res.status, headers: { 'Cache-Control': 'no-store' } });
+}
+
+/**
+ * Route handlers for the App Router. Put this in `app/api/redline/[...action]/route.ts`.
+ * The catch-all segment carries `build/log` and the History proxy under `h/<sha>/...`:
  *
  * ```ts
  * import { createRedlineHandler } from '@vedantb/redline/next';
- * export const { GET, POST } = createRedlineHandler();
+ * export const { GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS } = createRedlineHandler();
  * ```
  */
-export function createRedlineHandler(options: RedlineNextOptions & { root?: string } = {}) {
-  const serverOptions = (): RedlineServerOptions => ({
-    root: options.root ?? process.cwd(),
-    baselineFile: options.baselineFile,
-    extensions: options.extensions ?? DEFAULT_EXTENSIONS,
-    enabled: isEnabled(options),
-  });
-
-  const handle = async (request: Request): Promise<Response> => {
-    const url = new URL(request.url);
-    const action = url.pathname.split('/').filter(Boolean).pop() ?? '';
-    let body: unknown = {};
-    if (request.method === 'POST') {
-      const text = await request.text();
-      try {
-        body = text.trim() ? JSON.parse(text) : {};
-      } catch {
-        return Response.json({ error: 'Invalid JSON body' }, { status: 400 });
-      }
-    }
-    const res = handleRedlineRequest(serverOptions(), action, request.method, url.searchParams, body);
-    if (res.text !== undefined) {
-      return new Response(res.text, {
-        status: res.status,
-        headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' },
-      });
-    }
-    return Response.json(res.body, { status: res.status, headers: { 'Cache-Control': 'no-store' } });
+export function createRedlineHandler(options: RedlineHandlerOptions = {}) {
+  const serverOptions = (): RedlineServerOptions => {
+    const root = options.root ?? process.cwd();
+    const enabled = isEnabled(options);
+    return {
+      root,
+      baselineFile: options.baselineFile,
+      extensions: options.extensions ?? DEFAULT_EXTENSIONS,
+      enabled,
+      builds: enabled && options.history !== false ? sharedBuilds(root, options.history ?? {}) : undefined,
+    };
   };
 
-  return { GET: handle, POST: handle };
+  const handle = (request: Request): Promise<Response> => handleRedlineNextRequest(request, serverOptions(), options.apiRoute);
+
+  return { GET: handle, HEAD: handle, POST: handle, PUT: handle, PATCH: handle, DELETE: handle, OPTIONS: handle };
 }
 
 export default withRedline;

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -7,6 +8,7 @@ import {
   createRedlineHandler,
   loaderPath,
   mergeTurbopackRules,
+  redlineAction,
   usesLegacyTurboKey,
   withRedline,
 } from '../src/next';
@@ -93,10 +95,20 @@ describe('withRedline', () => {
 
   it('merges rewrites in array and object form', async () => {
     const arr = await withRedline({ rewrites: async () => [{ source: '/a', destination: '/b' }] }, {}).rewrites!();
-    expect(arr[0]).toEqual({ source: '/__redline/:action', destination: '/api/redline/:action' });
+    expect(arr[0]).toEqual({ source: '/__redline/:path*', destination: '/api/redline/:path*' });
     expect(arr).toHaveLength(2);
     const obj = await withRedline({ rewrites: async () => ({ afterFiles: [] }) }, { apiRoute: '/api/rl/' }).rewrites!();
-    expect(obj.beforeFiles[0].destination).toBe('/api/rl/:action');
+    expect(obj.beforeFiles[0].destination).toBe('/api/rl/:path*');
+  });
+
+  it('is off under REDLINE=0 even with enabled: true', () => {
+    const input = { reactStrictMode: true };
+    process.env.REDLINE = '0';
+    try {
+      expect(withRedline(input, { enabled: true })).toBe(input);
+    } finally {
+      delete process.env.REDLINE;
+    }
   });
 });
 
@@ -119,5 +131,61 @@ describe('createRedlineHandler', () => {
     const diff = await (await GET(new Request('http://x/api/redline/diff'))).json();
     expect(diff.mode).toBe('content');
     expect(diff.files[0].path).toBe('a.tsx');
+  });
+});
+
+describe('redlineAction', () => {
+  it('reads the action after the API route or /__redline', () => {
+    expect(redlineAction('/api/redline/diff')).toBe('diff');
+    expect(redlineAction('/api/redline/build/log/')).toBe('build/log');
+    expect(redlineAction('/__redline/build/thumb')).toBe('build/thumb');
+    expect(redlineAction('/api/rl/pin', '/api/rl/')).toBe('pin');
+    expect(redlineAction(`/api/redline/h/${'a'.repeat(40)}/`)).toBe(`h/${'a'.repeat(40)}/`);
+    expect(redlineAction('/elsewhere/baseline')).toBe('baseline');
+  });
+});
+
+describe('createRedlineHandler history', () => {
+  function repo(): { root: string; sha: string } {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'redline-next-history-')));
+    const git = (...args: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd: root, encoding: 'utf8' }).trim();
+    git('init', '-q');
+    // Not a Next.js app, so the job fails fast without installing anything.
+    fs.writeFileSync(path.join(root, 'README.md'), 'hi\n');
+    git('add', '.');
+    git('commit', '-q', '-m', 'init');
+    return { root, sha: git('rev-parse', 'HEAD') };
+  }
+
+  it('attaches a Next.js BuildManager, so build requests queue a job instead of answering 501', async () => {
+    const { root, sha } = repo();
+    const handler = createRedlineHandler({ root, enabled: true, history: { thumbnails: false } });
+    expect(Object.keys(handler).sort()).toEqual(['DELETE', 'GET', 'HEAD', 'OPTIONS', 'PATCH', 'POST', 'PUT']);
+    const post = await handler.POST(new Request('http://x/api/redline/build', { method: 'POST', body: JSON.stringify({ sha: 'HEAD' }) }));
+    expect(post.status).toBe(202);
+    expect((await post.json()).build).toMatchObject({ sha, framework: 'next', basePath: `/__redline/h/${sha}/` });
+
+    let build: { status: string; error?: string } = { status: 'queued' };
+    for (let i = 0; i < 100 && (build.status === 'queued' || build.status === 'building'); i++) {
+      await new Promise((r) => setTimeout(r, 20));
+      build = (await (await handler.GET(new Request(`http://x/api/redline/build?sha=${sha}`))).json()).build;
+    }
+    expect(build).toMatchObject({ status: 'failed', error: expect.stringMatching(/No Next.js app/) });
+
+    // A second handler for the same app (a route module reload) shares the job.
+    const again = createRedlineHandler({ root, enabled: true });
+    expect((await (await again.GET(new Request('http://x/api/redline/build'))).json()).builds).toHaveLength(1);
+
+    const log = await handler.GET(new Request(`http://x/api/redline/build/log?sha=${sha}`));
+    expect(log.headers.get('content-type')).toContain('text/plain');
+    const del = await handler.DELETE(new Request(`http://x/api/redline/build?sha=${sha}`, { method: 'DELETE' }));
+    expect((await del.json()).removed).toBe(true);
+    expect((await handler.GET(new Request(`http://x/__redline/h/${sha}/`))).status).toBe(404);
+  });
+
+  it('answers 501 with history: false', async () => {
+    const { root } = repo();
+    const { GET } = createRedlineHandler({ root, enabled: true, history: false });
+    expect((await GET(new Request('http://x/api/redline/build'))).status).toBe(501);
   });
 });
