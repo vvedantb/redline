@@ -59,7 +59,7 @@ Plugin options:
 | `enabled` | `true` in `vite dev`, `false` in `vite build` | `false` turns off tagging and makes `/__redline/*` report `enabled: false`. `true` also tags production builds and serves the endpoints from `vite preview`. |
 | `baselineFile` | `<root>/.redline/baseline.json` | Where the pinned baseline is stored. |
 | `extensions` | `['tsx', 'jsx', 'ts', 'js', 'css']` | File types included in git diffs. |
-| `history` | `{ maxBuilds: 5, thumbnails: true }` | History builds. `maxBuilds` is how many ready builds stay on disk. `thumbnails: false` skips Playwright screenshots. `false` turns History builds off. |
+| `history` | `{ maxBuilds: 5, thumbnails: true }` | History builds. `maxBuilds` is how many ready builds stay on disk. `thumbnails: false` skips Playwright screenshots. `networkFixtures` is the fixtures file for the [read-only network layer](#history-network-read-only) (default `.redline/network-fixtures.json`). `false` turns History builds off. |
 
 Set `REDLINE=0` in the environment to turn Redline off whatever `enabled` says. History builds use this.
 
@@ -102,7 +102,7 @@ If you are upgrading, rename `app/api/redline/[action]` to `app/api/redline/[...
 | Option | Default | What it does |
 | --- | --- | --- |
 | `root` | `process.cwd()` | Project root. `.redline/` lives here. Under `next dev` this is the app directory. |
-| `history` | `{ maxBuilds: 5, thumbnails: true }` | History builds. `appDir` is the Next.js app relative to `root`, for a monorepo where `root` is the repository top level. `maxBuilds` and `thumbnails` work as for Vite. `false` turns History builds off, and the build endpoints answer `501`. |
+| `history` | `{ maxBuilds: 5, thumbnails: true }` | History builds. `appDir` is the Next.js app relative to `root`, for a monorepo where `root` is the repository top level. `maxBuilds`, `thumbnails` and `networkFixtures` work as for Vite. `false` turns History builds off, and the build endpoints answer `501`. |
 
 Render the overlay from a client component:
 
@@ -218,9 +218,9 @@ How a Vite build runs (one at a time):
 
 1. `git worktree add --detach .redline/worktrees/<sha> <sha>`. Your working tree and branch are never checked out, restored or reset.
 2. Dependencies: if the lockfile at that commit matches the one on disk, Redline links your `node_modules` into the worktree. Otherwise it runs `npm ci` (or `pnpm install --frozen-lockfile`, `yarn install`, `bun install`) in the worktree.
-3. Env files are copied from your working tree into the worktree: from the git top level and, in a monorepo, from the Vite config directory. Redline copies `.env`, `.env.local`, `.env.development`, `.env.production` and `.env.<name>.local`, when present. A file committed at that commit is kept and not overwritten. Having no env files is fine. Vite inlines `import.meta.env.VITE_*` at build time, so an app that checks its client env when it loads (for example with t3-env) needs these files, or the same variables in the dev server's environment. Without them, the preview is blank.
-4. `vite build --base /__redline/h/<sha>/ --outDir .redline/builds/<sha>/dist`, with `REDLINE=0` and `NODE_ENV=production`. Tagging and the overlay are off in the build. The overlay also stays off on any page under `/__redline/h/`, even with `enabled={true}`.
-5. The worktree is removed, whether the build worked or not. The copied env files go with it, but their `VITE_*` values stay inlined in `dist/`.
+3. Env files are copied from your working tree into the worktree, [filtered to public keys](#history-env-allowlist): from the git top level and, in a monorepo, from the Vite config directory. Redline reads `.env`, `.env.local`, `.env.development`, `.env.production` and `.env.<name>.local`, when present. A file committed at that commit is kept and not overwritten. Having no env files is fine. The log shows what was kept, for example `Copied filtered env files: .env.local (kept 2 keys, stripped 3)`. Vite inlines `import.meta.env.VITE_*` at build time, so an app that checks its client env when it loads (for example with t3-env) needs its public keys in these files, or in the dev server's environment. Without them, the preview is blank.
+4. `vite build --base /__redline/h/<sha>/ --outDir .redline/builds/<sha>/dist`, with `REDLINE=0` and `NODE_ENV=production`. The dev server's environment is passed on without secret and Convex keys, so a `VITE_CONVEX_URL` in your shell is not inlined. Tagging and the overlay are off in the build. The overlay also stays off on any page under `/__redline/h/`, even with `enabled={true}`.
+5. The worktree is removed, whether the build worked or not. The filtered env files go with it, but their `VITE_*` values stay inlined in `dist/`.
 6. If Playwright and a Chromium browser are installed, Redline serves the build on a throwaway localhost port and saves a 1280×800 screenshot as the thumbnail. If not, it skips this step; the build still works.
 
 Job states: `queued` → `building` → `ready` or `failed`. Redline keeps the 5 most recently viewed ready builds (`history.maxBuilds`) and deletes older ones. Builds cut short by a dev server restart show as failed; click Retry.
@@ -256,9 +256,9 @@ How a Next.js build runs (one at a time, in the same queue as Vite):
 1. `git worktree add --detach .redline/worktrees/<sha> <sha>`. Your working tree is never checked out, restored or reset.
 2. Redline checks that the app directory in the worktree is a Next.js app. It looks for a `next.config.*` file, a `next` dependency, or an `app/` or `pages/` directory. If it finds none, the job fails straight away with a hint to set `history.appDir`.
 3. Dependencies are linked or installed, as for Vite.
-4. Env files are copied from your working tree into the worktree: from the git top level and, in a monorepo, from the app directory. Redline copies `.env`, `.env.local`, `.env.development`, `.env.production` and `.env.<name>.local`, when present. A file committed at that commit is kept and not overwritten. Having no env files is fine.
+4. Env files are copied from your working tree into the worktree, [filtered to public keys](#history-env-allowlist): from the git top level and, in a monorepo, from the app directory. Redline reads `.env`, `.env.local`, `.env.development`, `.env.production` and `.env.<name>.local`, when present. A file committed at that commit is kept and not overwritten. Having no env files is fine.
 5. The app's `next.config.*` in the worktree is renamed to `next.config.redline-user.*`. A wrapper with the original name imports it and forces `output: 'standalone'`, `basePath: '/__redline/h/<sha>'` and `distDir: '.next'`. It also sets `outputFileTracingRoot` and `turbopack.root` to the git top level, so that linked `node_modules` stay inside the tracing root. It removes `assetPrefix` and `env.NEXT_PUBLIC_REDLINE`. Your committed config does not need `output: 'standalone'`, and the config file in your working tree is not changed.
-6. `next build` runs in the worktree app directory with `NODE_ENV=production` and `REDLINE=0`. Redline adds `--webpack` if the app's `build` script uses it. Redline strips the dev server's own variables (`__NEXT_*`, `NEXT_PRIVATE_*`, `TURBOPACK*`, `PORT`, `HOSTNAME`) from the environment. `withRedline` and `createRedlineHandler` are off under `REDLINE=0`, so the snapshot has no tags, no overlay and no Redline endpoints.
+6. `next build` runs in the worktree app directory with `NODE_ENV=production` and `REDLINE=0`. Redline adds `--webpack` if the app's `build` script uses it. Redline strips the dev server's own variables (`__NEXT_*`, `NEXT_PRIVATE_*`, `TURBOPACK*`, `PORT`, `HOSTNAME`) and every secret or Convex key (see the [allowlist](#history-env-allowlist)) from the environment. `withRedline` and `createRedlineHandler` are off under `REDLINE=0`, so the snapshot has no tags, no overlay and no Redline endpoints.
 7. `.next/standalone` moves to `.redline/builds/<sha>/standalone/`. Then `.next/static` and `public/` go next to `server.js`. Next mirrors the app's path from the tracing root, so `server.js` sits at `standalone/<path from git top to the worktree app>/server.js`. A build is ready only when that `server.js` exists.
 8. The worktree is removed, whether the build worked or not.
 
@@ -266,7 +266,9 @@ The first request for `/__redline/h/<sha>/` starts `node server.js` in that dire
 
 Each ready build that has been viewed keeps one server running. Redline stops the server when the build is removed (`DELETE`, Retry or LRU eviction) and when the dev server exits. Thumbnails start the server, take the screenshot and stop it again.
 
-The snapshot server inherits the dev server's environment, less the variables listed in step 6. Env files copied into the worktree are also used at build time, so `NEXT_PUBLIC_*` values are inlined as they are today. The copies are deleted with the worktree. For an app that needs a database or auth provider (CarePulse, for example), the preview uses the same credentials as your dev server. Treat `.redline/` as sensitive, and keep it in `.gitignore`.
+The snapshot server inherits the dev server's environment, less the variables listed in step 6. The filtered env files are also used at build time, so public `NEXT_PUBLIC_*` values are inlined. The copies are deleted with the worktree. Server secrets, database URLs and Convex keys do not reach the snapshot, so server code that needs them fails in the preview rather than calling a live backend. Treat `.redline/` as sensitive, and keep it in `.gitignore`.
+
+HTML pages from the snapshot server get the [read-only network bootstrap](#history-network-read-only) added to `<head>` by the proxy. HTML responses are buffered for this; other responses stream as before.
 
 Monorepo (Turborepo, pnpm or npm workspaces). If `next dev` runs in `apps/web`, the default `root` is `apps/web`. Redline finds the git top level itself, so you need no extra options. If you set `root` to the repository top level instead, add `appDir`:
 
@@ -308,6 +310,48 @@ open http://localhost:3000/__redline/h/$(git rev-parse HEAD~1)/
 ```
 
 Or open the app, click **History** in the toolbar, then click a commit. The unit tests cover the Next.js path (`packages/redline/test/standalone.test.ts`). It was also tested by hand on Next 16.3.6 with Turbopack and linked `node_modules`. The E2E suite runs against the Vite demo.
+
+#### History env allowlist
+
+History is read-only. It must not reach a live backend or hold server secrets. So Redline filters env files as it copies them into the worktree:
+
+- Kept: `CLERK_PUBLISHABLE_KEY`, `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, `VITE_CLERK_PUBLISHABLE_KEY`, and other `VITE_*`, `NEXT_PUBLIC_*` and `PUBLIC_*` keys.
+- Always stripped, even with a public prefix: any key that contains `CONVEX` (for example `VITE_CONVEX_URL`, `CONVEX_DEPLOY_KEY`); any key that matches `SECRET`, `PASSWORD`, `PRIVATE_KEY`, `API_KEY`, `ACCESS_TOKEN`, `AUTH_TOKEN`, `DEPLOY_KEY`, `DATABASE_URL` or `CREDENTIAL`; and any value that contains `convex.cloud` or `.convex.site`.
+- Dropped: every other key, comments and lines that are not `KEY=value`.
+
+The process environment for `vite build`, `next build` and the standalone server loses the always-stripped keys too. Other variables (`PATH`, `HOME` and so on) stay, because the build tools need them. `@vedantb/redline/vite` and `@vedantb/redline/next` export the rules as `HISTORY_ENV_ALLOWLIST`, `HISTORY_ENV_STRIP_KEYS` and `HISTORY_ENV_STRIP_VALUE`, and the check as `isHistoryEnvKeyAllowed(key, value)`. A custom Vite `envPrefix` is not on the allowlist.
+
+#### History network (read-only)
+
+History pages also get a small, generic network layer. It is not tied to Convex or any other backend:
+
+1. Redline adds `<script src="/__redline/network/bootstrap.js"></script>` at the start of `<head>` in every History HTML page. It is a blocking script, so it runs before the app's module scripts. The dev server serves it (not the build), so every build gets the current version.
+2. On a page under `/__redline/h/`, the script sets `window.__redlineNetwork.mode` to `'replay'` and patches `fetch` and `XMLHttpRequest`:
+   - `GET` and `HEAD` requests that match a fixture get the canned response, with the header `X-Redline-Fixture: 1`. Requests with no fixture go to the network as usual, so static assets still load.
+   - `POST`, `PUT`, `PATCH` and `DELETE` never reach the network. They get `200 {"ok":true,"readOnly":true}` with `X-Redline-Read-Only: 1`, and `window.__redlineNetwork.lastMutation` is set to `{ method, url, blocked: true }`.
+3. Fixtures come from `GET /__redline/network/fixtures`, which reads `history.networkFixtures` (default `.redline/network-fixtures.json`). A missing file means no fixtures.
+
+Fixture file format (synthetic data only; do not put secrets in it):
+
+```json
+{
+  "version": 1,
+  "entries": [
+    {
+      "request": { "method": "GET", "url": "/api/demo/notes" },
+      "response": { "status": 200, "headers": { "content-type": "application/json" }, "body": { "notes": [{ "id": "1", "text": "Fixture note" }] } }
+    }
+  ]
+}
+```
+
+`method` defaults to `GET` and `status` to `200`. A string `body` is sent as is; anything else is sent as JSON. URLs match on path and query, then on path alone. The host is ignored, and so are the `/__redline/h/<sha>` prefix and a trailing slash. So `/api/x`, `api/x` and `https://any.host/api/x/` all match `/api/x`.
+
+`window.__redlineNetwork` is `{ mode, readOnly, fixturesLoaded, lastMutation?, match(url, method?), dumpFixtures(), downloadFixtures() }`. The `NetworkFixtures` and `RedlineNetworkState` types are exported from `@vedantb/redline`.
+
+Capture: on a live Vite dev page, the plugin adds the same script, which does nothing unless the URL has `?redlineNetwork=capture`. Then it records same-origin JSON `GET` responses made with `fetch`. Call `__redlineNetwork.dumpFixtures()` in the console to see them, or `downloadFixtures()` to save `network-fixtures.json`. Review the file before you commit it: it holds whatever your live API returned. On Next.js, add the script tag to your root layout in dev to use capture.
+
+WebSockets are not patched. A protocol adapter for WebSocket backends (for example Convex sync) is future work. Until then, stripping `*CONVEX*` keys stops a History build from connecting to a live Convex deployment.
 
 The overlay is off when any of these is true:
 
@@ -359,9 +403,11 @@ The E2E suite tests the package on its own demo. It needs the Vite dev server, b
 - pinning `HEAD` from the UI stores the git SHA
 - `?redline=0`, reduced motion, and the overlay toggle each turn the overlay off
 - the toolbar hides and shows outlines and restores its saved position after a reload
+- the live demo reads its notes from the live dev API (`/api/demo/notes`) and shows the dev server's synthetic `VITE_CONVEX_URL`
 - choosing a commit in the history panel builds it, shows it in an iframe without outlines or pinning, and **Latest** returns to the live app with outlines
+- in that iframe the network layer is in `replay` mode: the notes come from `apps/demo/network-fixtures.json`, **Add note** is answered read-only and never reaches the live API (by `fetch` or XHR), and `VITE_CONVEX_URL` was not inlined into the build
 
-The suite is local only. It needs no auth, backend or credentials. CI runs the same commands on Node 22 (`.github/workflows/ci.yml`).
+The suite is local only. It needs no auth, backend or credentials. The `VITE_CONVEX_URL` it sets on the dev server is a made-up URL (`e2e/env.ts`); nothing connects to it. CI runs the same commands on Node 22 (`.github/workflows/ci.yml`).
 
 ## Repo layout
 
@@ -376,8 +422,9 @@ e2e/               Playwright tests and baseline fixtures
 - Only JSX host elements are tagged. Elements created with `React.createElement` or rendered by third-party components in `node_modules` are not.
 - History builds need your dependencies to build that commit. In a monorepo where the app imports a workspace package that is built from source (like this repo's demo), linking `node_modules` uses the current build of that package, and a fresh install may fail if the package's build output is not committed.
 - History builds of client-side routers need the router to respect Vite's `base` (`import.meta.env.BASE_URL`).
-- Vite History builds inline your current `VITE_*` values, not the ones at that commit. Env files are copied from your working tree, not read from history.
-- Next.js History builds override `basePath`, `assetPrefix`, `distDir` and the tracing root for the snapshot. Code that hard-codes root-relative URLs (for example `fetch('/api/x')`, not through `next/link` or the base path) calls the live dev server, not the snapshot. `next build` must succeed at that commit, type checks and lint included.
+- Vite History builds inline your current public `VITE_*` values, not the ones at that commit. Env files are copied (filtered) from your working tree, not read from history. An env file committed at that commit is used as committed, without filtering.
+- The read-only network layer covers `fetch` and `XMLHttpRequest` only. WebSockets, `EventSource` and `navigator.sendBeacon` are not intercepted.
+- Next.js History builds override `basePath`, `assetPrefix`, `distDir` and the tracing root for the snapshot. Code that hard-codes root-relative URLs (for example `fetch('/api/x')`, not through `next/link` or the base path) calls the live dev server, not the snapshot, unless a fixture matches it. Writes are always blocked. `next build` must succeed at that commit, type checks and lint included.
 - Each Next.js preview is a separate Node process. It uses the memory that `next start` would. Lower `history.maxBuilds` if that is a problem.
 - The toolbar can be moved with a pointer only. There is no keyboard control for its position.
 - The endpoints run `git` commands and builds in the project root. They are meant for local dev servers and must not be exposed publicly.

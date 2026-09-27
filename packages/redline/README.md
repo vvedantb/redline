@@ -22,4 +22,6 @@ import { RedlineOverlay } from '@vedantb/redline';
 
 In the toolbar's History panel, click a commit to build it in a separate git worktree and view it in an iframe at `/__redline/h/<sha>/`. Vite builds are served as static files. Next.js builds use `output: 'standalone'`, and Redline proxies them to `node server.js`, which it starts on first view.
 
+History is read-only. Env files are copied into the build filtered to public keys, with secret and Convex keys stripped. History pages get a small network layer that replays `fetch` and XHR fixtures from `.redline/network-fixtures.json` and answers writes without touching the network.
+
 Full documentation, including Next.js set-up, baseline modes and History builds: https://github.com/vvedantb/redline#readme
