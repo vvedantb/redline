@@ -2,7 +2,14 @@ import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createRedlineHandler, withRedline } from '../src/next';
+import {
+  TURBOPACK_GLOB,
+  createRedlineHandler,
+  loaderPath,
+  mergeTurbopackRules,
+  usesLegacyTurboKey,
+  withRedline,
+} from '../src/next';
 
 describe('withRedline', () => {
   it('returns a config object for an empty config', () => {
@@ -38,6 +45,50 @@ describe('withRedline', () => {
     const config = withRedline({}, {});
     const out = config.webpack!({ module: { rules: [] } }, { dev: false });
     expect(out.module.rules).toHaveLength(0);
+  });
+
+  it('adds a Turbopack rule that reuses the webpack loader', () => {
+    const config = withRedline({}, { enabled: true });
+    expect(config.turbopack!.rules[TURBOPACK_GLOB]).toEqual({
+      loaders: [{ loader: loaderPath, options: { root: process.cwd() } }],
+    });
+    expect(config.experimental).toBeUndefined();
+  });
+
+  it('keeps user turbopack config and rules', () => {
+    const svg = { loaders: ['@svgr/webpack'], as: '*.js' };
+    const config = withRedline({ turbopack: { resolveAlias: { a: 'b' }, rules: { '*.svg': svg } } }, { enabled: true });
+    expect(config.turbopack!.resolveAlias).toEqual({ a: 'b' });
+    expect(config.turbopack!.rules['*.svg']).toBe(svg);
+    expect(config.turbopack!.rules[TURBOPACK_GLOB].loaders).toHaveLength(1);
+  });
+
+  it('uses experimental.turbo when the user config already does', () => {
+    const config = withRedline(
+      { experimental: { ppr: true, turbo: { rules: { '*.svg': { loaders: ['svgr'] } } } } },
+      { enabled: true },
+    );
+    expect(config.turbopack).toBeUndefined();
+    expect(config.experimental!.ppr).toBe(true);
+    expect(Object.keys(config.experimental!.turbo.rules)).toEqual(['*.svg', TURBOPACK_GLOB]);
+  });
+
+  it('appends to a user rule for the same glob so Redline runs first', () => {
+    const rules = mergeTurbopackRules({ [TURBOPACK_GLOB]: { loaders: ['other'] } }, '/app');
+    expect(rules[TURBOPACK_GLOB].loaders).toEqual(['other', { loader: loaderPath, options: { root: '/app' } }]);
+  });
+
+  it('picks the Turbopack config key by Next version', () => {
+    expect(usesLegacyTurboKey(null)).toBe(false);
+    expect(usesLegacyTurboKey([14, 2])).toBe(true);
+    expect(usesLegacyTurboKey([15, 2])).toBe(true);
+    expect(usesLegacyTurboKey([15, 3])).toBe(false);
+    expect(usesLegacyTurboKey([16, 0])).toBe(false);
+  });
+
+  it('does not add Turbopack rules when disabled', () => {
+    const input = { turbopack: { rules: {} } };
+    expect(withRedline(input, { enabled: false }).turbopack).toBe(input.turbopack);
   });
 
   it('merges rewrites in array and object form', async () => {

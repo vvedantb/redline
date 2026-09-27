@@ -53,3 +53,18 @@ export interface SourceLocation {
   startLine: number;
   endLine: number;
 }
+
+export interface CommitInfo {
+  sha: string;
+  shortSha: string;
+  subject: string;
+  author: string;
+  /** ISO 8601 author date. */
+  date: string;
+}
+
+export interface LogResponse {
+  enabled: boolean;
+  headSha: string | null;
+  commits: CommitInfo[];
+}

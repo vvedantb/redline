@@ -5,7 +5,7 @@ import path from 'node:path';
 import { createTwoFilesPatch } from 'diff';
 import { parseUnifiedDiff } from './diff';
 import { normalizePath } from './source';
-import type { DiffFile, DiffResponse, StoredBaseline } from './types';
+import type { CommitInfo, DiffFile, DiffResponse, StoredBaseline } from './types';
 
 export interface RedlineServerOptions {
   /** Project root. Tagged paths and diff paths are relative to it. */
@@ -166,6 +166,41 @@ export function computeDiff(opts: RedlineServerOptions, baselineOverride?: strin
   return { enabled, mode: 'git', baselineSha: stored.sha, headSha, files: diffGit(opts.root, stored.sha, opts.extensions) };
 }
 
+export const DEFAULT_LOG_LIMIT = 50;
+const MAX_LOG_LIMIT = 200;
+
+/** Commits reachable from HEAD, newest first. Read-only: runs `git log`. */
+export function getLog(root: string, limit = DEFAULT_LOG_LIMIT): CommitInfo[] {
+  if (!getHeadSha(root)) return [];
+  const n = Math.min(Math.max(Math.trunc(limit) || DEFAULT_LOG_LIMIT, 1), MAX_LOG_LIMIT);
+  // Unit and record separators keep subjects with any punctuation intact.
+  const out = git(root, ['log', `-n${n}`, '--no-color', '--format=%H%x1f%h%x1f%s%x1f%an%x1f%aI%x1e', 'HEAD']);
+  return out
+    .split('\x1e')
+    .map((r) => r.trim())
+    .filter(Boolean)
+    .map((r) => {
+      const [sha, shortSha, subject, author, date] = r.split('\x1f');
+      return { sha, shortSha, subject, author, date };
+    });
+}
+
+/**
+ * Contents of a root-relative file at a commit. Read-only: runs `git show <sha>:./<path>`.
+ * Only files with a configured extension can be read.
+ */
+export function readFileAt(opts: RedlineServerOptions, file: string, ref = 'HEAD'): { path: string; ref: string; content: string } {
+  const rel = safeRelative(opts.root, file);
+  const ext = path.extname(rel).slice(1);
+  if (!(opts.extensions ?? DEFAULT_EXTENSIONS).includes(ext)) throw new Error(`File type not allowed: ${file}`);
+  const sha = resolveCommit(opts.root, ref);
+  try {
+    return { path: rel, ref: sha, content: git(opts.root, ['show', `${sha}:./${rel}`]) };
+  } catch {
+    throw new Error(`File not found at ${sha.slice(0, 7)}: ${rel}`);
+  }
+}
+
 function publicBaseline(b: StoredBaseline | null) {
   if (!b) return null;
   return { mode: b.mode, sha: b.sha, notes: b.notes, pinnedAt: b.pinnedAt, files: b.files ? Object.keys(b.files) : undefined };
@@ -173,7 +208,8 @@ function publicBaseline(b: StoredBaseline | null) {
 
 /**
  * Framework-agnostic request handler for `/__redline/<action>`.
- * Actions: `diff` (GET), `baseline` (GET), `pin` (POST), `clear` (POST).
+ * Actions: `diff`, `baseline`, `log`, `file` (GET), `pin`, `clear` (POST).
+ * `log` and `file` only read git history; nothing here checks out or resets the working tree.
  */
 export function handleRedlineRequest(
   opts: RedlineServerOptions,
@@ -192,6 +228,21 @@ export function handleRedlineRequest(
           status: 200,
           body: { enabled, headSha: getHeadSha(opts.root), baseline: enabled ? publicBaseline(readBaseline(opts)) : null },
         };
+      case 'log':
+        return {
+          status: 200,
+          body: {
+            enabled,
+            headSha: getHeadSha(opts.root),
+            commits: enabled ? getLog(opts.root, Number(query.get('limit') ?? DEFAULT_LOG_LIMIT)) : [],
+          },
+        };
+      case 'file': {
+        if (!enabled) return { status: 403, body: { enabled, error: 'Redline is disabled' } };
+        const file = query.get('path');
+        if (!file) return { status: 400, body: { enabled, error: 'Missing path' } };
+        return { status: 200, body: { enabled, ...readFileAt(opts, file, query.get('ref') || 'HEAD') } };
+      }
       case 'pin': {
         if (method !== 'POST') return { status: 405, body: { error: 'Use POST' } };
         if (!enabled) return { status: 403, body: { enabled, error: 'Redline is disabled' } };

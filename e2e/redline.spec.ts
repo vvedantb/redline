@@ -131,3 +131,58 @@ test('the overlay toggle and localStorage flag turn the overlay off', async ({ p
   await expect(outlines(page)).toHaveCount(0);
   await page.evaluate(() => localStorage.removeItem('redlineDisabled'));
 });
+
+test('the toolbar hides outlines and remembers its position', async ({ page, request }) => {
+  await pinCommitA(request);
+  await page.goto('/?redline=1');
+  await expect.poll(async () => (await outlinedSources(page)).length).toBeGreaterThan(0);
+  const toolbar = page.getByRole('toolbar', { name: 'Redline' });
+
+  await toolbar.getByRole('button', { name: 'Hide outlines' }).click();
+  await expect(outlines(page)).toHaveCount(0);
+  await expect(page.locator('[data-redline-status]')).toContainText('(hidden)');
+
+  const handle = page.locator('[data-redline-drag]');
+  const box = (await handle.boundingBox())!;
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(300, 200, { steps: 5 });
+  await page.mouse.up();
+  const moved = (await toolbar.boundingBox())!;
+
+  await page.reload();
+  await expect(toolbar.getByRole('button', { name: 'Show outlines' })).toBeVisible();
+  await expect(outlines(page)).toHaveCount(0);
+  const restored = (await toolbar.boundingBox())!;
+  expect(Math.round(restored.x)).toBe(Math.round(moved.x));
+  expect(Math.round(restored.y)).toBe(Math.round(moved.y));
+
+  await toolbar.getByRole('button', { name: 'Show outlines' }).click();
+  await expect.poll(async () => (await outlinedSources(page)).length).toBeGreaterThan(0);
+  await page.evaluate(() => localStorage.removeItem('redline:toolbar'));
+});
+
+test('history view-mode diffs against a commit without pinning it', async ({ page, request }) => {
+  await page.goto('/?redline=1');
+  await page.getByRole('toolbar', { name: 'Redline' }).getByRole('button', { name: 'History' }).click();
+  const panel = page.getByRole('dialog', { name: 'Redline history' });
+  const commits = panel.locator('[data-redline-commit]:not([data-redline-commit="latest"])');
+  await expect(commits.first()).toBeVisible();
+  const target = commits.last();
+  const sha = (await target.getAttribute('data-redline-commit'))!;
+  const short = (await target.locator('code').textContent())!;
+
+  const diffRequest = page.waitForRequest((r) => r.url().includes(`/__redline/diff?baseline=${sha}`));
+  await target.click();
+  await diffRequest;
+  await expect(page.locator('[data-redline-viewing]')).toHaveText(`Viewing ${short}`);
+  await expect(target).toHaveAttribute('aria-current', 'true');
+
+  // Viewing is not pinning.
+  const state = await (await request.get('/__redline/baseline')).json();
+  expect(state.baseline).toBeNull();
+
+  await page.getByRole('toolbar', { name: 'Redline' }).getByRole('button', { name: 'Latest' }).click();
+  await expect(page.locator('[data-redline-viewing]')).toHaveCount(0);
+  await expect(page.locator('[data-redline-status]')).toContainText('no baseline pinned');
+});

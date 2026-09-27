@@ -1,4 +1,4 @@
-import type { BaselineMode } from '../types';
+import type { BaselineMode, LogResponse } from '../types';
 
 export const DEFAULT_ENDPOINT = '/__redline';
 export const LOCAL_BASELINE_KEY = 'redline:baseline';
@@ -117,4 +117,14 @@ export async function clearBaseline(options: EndpointOptions = {}): Promise<Base
     refreshRedline();
     return { enabled: true, headSha: null, baseline: null, source: 'local' };
   }
+}
+
+/** Recent commits, newest first. Read-only: the server runs `git log`. */
+export async function getLog(options: EndpointOptions & { limit?: number } = {}): Promise<LogResponse> {
+  const endpoint = options.endpoint ?? DEFAULT_ENDPOINT;
+  const qs = options.limit ? `?limit=${options.limit}` : '';
+  const res = await fetch(`${endpoint}/log${qs}`, { cache: 'no-store' });
+  const json = (await res.json()) as LogResponse & { error?: string };
+  if (!res.ok) throw new Error(json.error ?? `Redline log failed (${res.status})`);
+  return json;
 }
