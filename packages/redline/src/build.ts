@@ -6,15 +6,29 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { historyBasePath, isFullSha } from './paths';
+import {
+  ServerPool,
+  assembleStandalone,
+  copyEnvFiles,
+  isNextApp,
+  nextBin,
+  nextBuildFlags,
+  snapshotEnv,
+  standaloneServerDir,
+  writeSnapshotConfig,
+  type SpawnServerFn,
+} from './standalone';
 import type { BuildFramework, BuildJob, BuildMeta } from './types';
 
 /**
  * Per-commit production builds for the History panel.
  *
  * A job adds a detached worktree under `.redline/worktrees/<sha>`, reuses or installs
- * dependencies, runs `vite build --base /__redline/h/<sha>/` into `.redline/builds/<sha>/dist`,
- * then removes the worktree. The main working tree is never checked out, reset or restored.
- * One build runs at a time.
+ * dependencies, builds, then removes the worktree. Vite: `vite build --base /__redline/h/<sha>/`
+ * into `.redline/builds/<sha>/dist`, served as static files. Next.js: `next build` with
+ * `output: 'standalone'` into `.redline/builds/<sha>/standalone`, served by `node server.js`
+ * on a localhost port, started on first view. The main working tree is never checked out,
+ * reset or restored. One build runs at a time.
  */
 
 export interface ExecOptions {
@@ -27,13 +41,16 @@ export interface ExecOptions {
 /** Runs a command to completion. Rejects on a non-zero exit. Injected in tests. */
 export type ExecFn = (cmd: string, args: string[], opts: ExecOptions) => Promise<void>;
 
-/** Writes a thumbnail of the built app to `out`. Resolves false when capture is skipped. */
-export type CaptureFn = (input: { dist: string; basePath: string; out: string; log: (text: string) => void }) => Promise<boolean>;
+/**
+ * Writes a thumbnail of the built app to `out`. Resolves false when capture is skipped.
+ * `open()` serves the build on localhost and returns the page URL; the manager closes it after.
+ */
+export type CaptureFn = (input: { open: () => Promise<string>; out: string; log: (text: string) => void }) => Promise<boolean>;
 
 export interface BuildManagerOptions {
   /** Project root. `.redline/` lives here. */
   root: string;
-  /** Directory of the Vite config. Builds run from the same place inside the worktree. Default `root`. */
+  /** Directory of the Vite config or Next.js app. Builds run from the same place inside the worktree. Default `root`. */
   configDir?: string;
   /** Vite config file, passed to `vite build --config`. */
   configFile?: string;
@@ -43,6 +60,8 @@ export interface BuildManagerOptions {
   exec?: ExecFn;
   /** Thumbnail capture after a build is ready. `false` turns it off. Default: Playwright, if installed. */
   capture?: CaptureFn | false;
+  /** Starts a Next.js standalone `server.js`. Injected in tests. */
+  spawnServer?: SpawnServerFn;
 }
 
 export const DEFAULT_MAX_READY = 5;
@@ -52,6 +71,8 @@ const LOCKFILES = ['package-lock.json', 'pnpm-lock.yaml', 'yarn.lock', 'bun.lock
 export interface BuildPaths {
   dir: string;
   dist: string;
+  /** Next.js standalone output. */
+  standalone: string;
   meta: string;
   log: string;
   worktree: string;
@@ -68,6 +89,7 @@ export function buildPaths(root: string, sha: string): BuildPaths {
   return {
     dir,
     dist: path.join(dir, 'dist'),
+    standalone: path.join(dir, 'standalone'),
     meta: path.join(dir, 'meta.json'),
     log: path.join(dir, 'build.log'),
     worktree: path.join(base, 'worktrees', sha),
@@ -289,12 +311,26 @@ interface Running {
   controller: AbortController;
 }
 
+type Log = (text: string) => void;
+type Run = (cmd: string, args: string[], cwd: string, env?: NodeJS.ProcessEnv) => Promise<void>;
+
+interface Layout {
+  /** Git top level of the live project. */
+  top: string;
+  /** Vite config directory or Next.js app directory. */
+  configDir: string;
+  /** `configDir` relative to `top`. */
+  rel: string;
+}
+
 export class BuildManager {
   readonly root: string;
   private readonly options: BuildManagerOptions;
   private readonly exec: ExecFn;
+  private readonly servers: ServerPool;
   private readonly jobs = new Map<string, BuildMeta>();
   private readonly lastAccess = new Map<string, number>();
+  private cachedLayout: Layout | null = null;
   private capturing: string | null = null;
   private queue: string[] = [];
   private running: Running | null = null;
@@ -304,7 +340,12 @@ export class BuildManager {
     this.options = options;
     this.root = options.root;
     this.exec = options.exec ?? spawnExec;
+    this.servers = new ServerPool({ spawn: options.spawnServer });
     this.load();
+  }
+
+  get framework(): BuildFramework {
+    return this.options.framework ?? 'vite';
   }
 
   /** Read existing builds from disk. Jobs cut short by a restart are marked failed. */
@@ -356,13 +397,30 @@ export class BuildManager {
     return [...this.jobs.values()].sort((a, b) => b.queuedAt.localeCompare(a.queuedAt)).map((m) => this.toJob(m));
   }
 
+  /**
+   * Directory of the standalone `server.js` for a Next.js build of `sha`. Next mirrors the app's
+   * path from the tracing root (the git top level), and the app was built inside the worktree.
+   */
+  private nextServerDir(sha: string): string {
+    const p = this.paths(sha);
+    const { top, rel } = this.layout();
+    return standaloneServerDir(p.standalone, top, path.join(p.worktree, rel));
+  }
+
+  /** Whether the output of a build is on disk: `dist/index.html` for Vite, `server.js` for Next.js. */
+  private isBuilt(meta: BuildMeta): boolean {
+    if (meta.framework === 'next') return isFile(path.join(this.nextServerDir(meta.sha), 'server.js'));
+    return isFile(path.join(this.paths(meta.sha).dist, 'index.html'));
+  }
+
   /** Queue a build. Returns the existing job unless it failed, in which case it is queued again. */
   enqueue(sha: string): BuildJob {
     const p = this.paths(sha);
     const existing = this.jobs.get(sha);
     if (existing && existing.status !== 'failed') {
-      if (existing.status !== 'ready' || isFile(path.join(p.dist, 'index.html'))) return this.toJob(existing);
+      if (existing.status !== 'ready' || this.isBuilt(existing)) return this.toJob(existing);
     }
+    this.servers.stop(sha);
     fs.rmSync(p.dir, { recursive: true, force: true });
     fs.mkdirSync(p.dir, { recursive: true });
     fs.writeFileSync(p.log, '');
@@ -370,7 +428,7 @@ export class BuildManager {
       sha,
       shortSha: sha.slice(0, 7),
       status: 'queued',
-      framework: this.options.framework ?? 'vite',
+      framework: this.framework,
       queuedAt: new Date().toISOString(),
       startedAt: null,
       finishedAt: null,
@@ -382,23 +440,50 @@ export class BuildManager {
     return this.toJob(meta);
   }
 
-  /** Cancel a queued or running build and delete its files. */
+  /** Cancel a queued or running build, stop its server and delete its files. */
   remove(sha: string): boolean {
     const had = this.jobs.delete(sha);
     this.queue = this.queue.filter((s) => s !== sha);
     this.lastAccess.delete(sha);
     if (this.running?.sha === sha) this.running.controller.abort();
+    this.servers.stop(sha);
     const p = this.paths(sha);
     fs.rmSync(p.dir, { recursive: true, force: true });
     fs.rmSync(p.snapshot, { recursive: true, force: true });
     return had;
   }
 
-  /** `dist` of a ready build, or null. Counts as a view for LRU. */
+  /** `dist` of a ready Vite build, or null. Counts as a view for LRU. */
   distFor(sha: string): string | null {
-    if (this.jobs.get(sha)?.status !== 'ready') return null;
+    const meta = this.jobs.get(sha);
+    if (meta?.status !== 'ready' || meta.framework !== 'vite') return null;
     this.lastAccess.set(sha, Date.now());
     return this.paths(sha).dist;
+  }
+
+  /**
+   * Origin (`http://127.0.0.1:<port>`) of the standalone server of a ready Next.js build, or
+   * null. Starts `node server.js` on first use. Counts as a view for LRU.
+   */
+  async serverFor(sha: string): Promise<string | null> {
+    const meta = this.jobs.get(sha);
+    if (meta?.status !== 'ready' || meta.framework !== 'next') return null;
+    this.lastAccess.set(sha, Date.now());
+    return this.startServer(sha);
+  }
+
+  private async startServer(sha: string): Promise<string> {
+    const cwd = this.nextServerDir(sha);
+    const serverLog = path.join(this.paths(sha).dir, 'server.log');
+    const log = (text: string) => {
+      try {
+        fs.appendFileSync(serverLog, text);
+      } catch {
+        // Build removed while the server runs.
+      }
+    };
+    const port = await this.servers.start(sha, { script: path.join(cwd, 'server.js'), cwd, env: snapshotEnv(process.env), log });
+    return `http://127.0.0.1:${port}`;
   }
 
   logFile(sha: string): string | null {
@@ -415,6 +500,11 @@ export class BuildManager {
   whenIdle(): Promise<void> {
     if (!this.running && this.queue.length === 0) return Promise.resolve();
     return new Promise((resolve) => this.idleWaiters.push(resolve));
+  }
+
+  /** Stop every standalone server. Also runs when the process exits. */
+  close(): void {
+    this.servers.stopAll();
   }
 
   private pump(): void {
@@ -446,14 +536,18 @@ export class BuildManager {
         // Build directory removed mid-write.
       }
     };
+    const run: Run = (cmd, args, cwd, env) => {
+      log(`\n$ ${[cmd === process.execPath ? 'node' : cmd, ...args].join(' ')}\n`);
+      return this.exec(cmd, args, { cwd, env, log, signal: controller.signal });
+    };
     const building: BuildMeta = { ...queued, status: 'building', startedAt: new Date().toISOString() };
     this.save(building);
     try {
-      if (building.framework !== 'vite') {
-        throw new Error('History builds support Vite only for now. Next.js support is planned.');
+      if (building.framework === 'next') await this.buildNext(sha, p, run, log);
+      else await this.buildVite(sha, p, run, log);
+      if (!this.isBuilt(building)) {
+        throw new Error(building.framework === 'next' ? 'next build did not write a standalone server.js' : 'vite build did not write index.html');
       }
-      await this.buildVite(sha, p, log, controller.signal);
-      if (!isFile(path.join(p.dist, 'index.html'))) throw new Error('vite build did not write index.html');
       if (alive()) {
         this.save({ ...building, status: 'ready', finishedAt: new Date().toISOString() });
         log(`\n[redline] Ready at ${historyBasePath(sha)}\n`);
@@ -471,18 +565,18 @@ export class BuildManager {
     }
   }
 
-  private async buildVite(sha: string, p: BuildPaths, log: (t: string) => void, signal: AbortSignal): Promise<void> {
-    const { top, configDir, rel } = this.layout();
-    const run = (cmd: string, args: string[], cwd: string, env?: NodeJS.ProcessEnv) => {
-      log(`\n$ ${[cmd === process.execPath ? 'node' : cmd, ...args].join(' ')}\n`);
-      return this.exec(cmd, args, { cwd, env, log, signal });
-    };
-
+  /** Add the detached worktree. Returns the config directory inside it. */
+  private async addWorktree(sha: string, p: BuildPaths, run: Run, log: Log): Promise<string> {
+    const { top, rel } = this.layout();
     this.removeWorktree(p.worktree, log);
     fs.mkdirSync(path.dirname(p.worktree), { recursive: true });
     await run('git', ['worktree', 'add', '--detach', p.worktree, sha], top);
+    return path.join(p.worktree, rel);
+  }
 
-    const wtConfigDir = path.join(p.worktree, rel);
+  /** Link the main tree's `node_modules` when the lockfile is unchanged, otherwise install. */
+  private async installDependencies(p: BuildPaths, run: Run, log: Log): Promise<void> {
+    const { top, configDir, rel } = this.layout();
     const lock = findLockfile(top, configDir);
     const sameLock = !lock || hashFile(path.join(top, lock.rel, lock.name)) === hashFile(path.join(p.worktree, lock.rel, lock.name));
     const linkable = chain(top, configDir).filter((d) => hasPackages(path.join(top, d, 'node_modules')));
@@ -498,22 +592,51 @@ export class BuildManager {
       log(`\n[redline] ${lock ? 'Lockfile changed' : 'No lockfile'}. Installing dependencies.\n`);
       await run(cmd, installArgs, path.join(p.worktree, lock?.rel ?? rel));
     }
+  }
 
+  private async buildVite(sha: string, p: BuildPaths, run: Run, log: Log): Promise<void> {
+    const { top } = this.layout();
+    const wtConfigDir = await this.addWorktree(sha, p, run, log);
+    await this.installDependencies(p, run, log);
     const args = [viteBin(wtConfigDir), 'build', '--base', historyBasePath(sha), '--outDir', p.dist, '--emptyOutDir'];
     if (this.options.configFile) args.push('--config', path.join(p.worktree, path.relative(top, fs.realpathSync(this.options.configFile))));
     // REDLINE=0 turns off tagging and endpoints in the built app.
     await run(process.execPath, args, wtConfigDir, { ...process.env, NODE_ENV: 'production', REDLINE: '0' });
   }
 
+  /**
+   * `next build` in the worktree with a wrapper config that forces `output: 'standalone'` and
+   * `basePath: /__redline/h/<sha>`, then move the standalone server, static assets and `public/`
+   * into `.redline/builds/<sha>/standalone`.
+   */
+  private async buildNext(sha: string, p: BuildPaths, run: Run, log: Log): Promise<void> {
+    const { top, configDir, rel } = this.layout();
+    const wtApp = await this.addWorktree(sha, p, run, log);
+    if (!isNextApp(wtApp)) {
+      throw new Error(`No Next.js app at ${rel || '.'} in this commit. For a monorepo, set history.appDir.`);
+    }
+    await this.installDependencies(p, run, log);
+    // Env files are usually gitignored, so the worktree has none. Copy the live ones in.
+    const copied = [...copyEnvFiles(top, p.worktree), ...(rel ? copyEnvFiles(configDir, wtApp).map((n) => path.join(rel, n)) : [])];
+    log(`\n[redline] ${copied.length > 0 ? `Copied env files: ${copied.join(', ')}` : 'No env files to copy'}.\n`);
+    writeSnapshotConfig(wtApp, { basePath: historyBasePath(sha).replace(/\/$/, ''), tracingRoot: top });
+    log(`\n[redline] Snapshot config: output 'standalone', basePath ${historyBasePath(sha).replace(/\/$/, '')}.\n`);
+    await run(process.execPath, [nextBin(wtApp), 'build', ...nextBuildFlags(wtApp)], wtApp, snapshotEnv(process.env));
+    assembleStandalone(wtApp, p.standalone, top);
+  }
+
   /** Git top level, the config directory, and the config directory relative to the top level. */
-  private layout(): { top: string; configDir: string; rel: string } {
-    const configDir = fs.realpathSync(this.options.configDir ?? this.root);
-    const top = fs.realpathSync(gitSync(configDir, ['rev-parse', '--show-toplevel']));
-    return { top, configDir, rel: path.relative(top, configDir) };
+  private layout(): Layout {
+    if (!this.cachedLayout) {
+      const configDir = fs.realpathSync(this.options.configDir ?? this.root);
+      const top = fs.realpathSync(gitSync(configDir, ['rev-parse', '--show-toplevel']));
+      this.cachedLayout = { top, configDir, rel: path.relative(top, configDir) };
+    }
+    return this.cachedLayout;
   }
 
   /** Remove a build worktree. Never touches the main working tree. */
-  private removeWorktree(worktree: string, log: (t: string) => void): void {
+  private removeWorktree(worktree: string, log: Log): void {
     if (!fs.existsSync(worktree)) return;
     const { top, configDir } = this.layout();
     // Drop node_modules links first so nothing follows them into the main tree.
@@ -538,18 +661,45 @@ export class BuildManager {
     }
   }
 
-  private async captureThumbnail(sha: string, p: BuildPaths, log: (t: string) => void): Promise<void> {
+  /** Serve a build on localhost for capture. Vite: a throwaway static server. Next.js: its standalone server. */
+  private async openPreview(sha: string, p: BuildPaths): Promise<{ url: string; close: () => Promise<void> }> {
+    const basePath = historyBasePath(sha);
+    if (this.framework === 'next') {
+      const wasRunning = this.servers.has(sha);
+      const origin = await this.startServer(sha);
+      return { url: origin + basePath, close: async () => (wasRunning ? undefined : this.servers.stop(sha)) };
+    }
+    const server = http.createServer((req, res) => {
+      const pathname = new URL(req.url ?? '/', 'http://localhost').pathname;
+      const file = pathname.startsWith(basePath) ? resolveStaticFile(p.dist, pathname.slice(basePath.length)) : null;
+      if (file) sendFile(res, file);
+      else res.writeHead(404).end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    const port = address && typeof address === 'object' ? address.port : 0;
+    return { url: `http://127.0.0.1:${port}${basePath}`, close: () => new Promise((resolve) => server.close(() => resolve())) };
+  }
+
+  private async captureThumbnail(sha: string, p: BuildPaths, log: Log): Promise<void> {
     const capture = this.options.capture ?? captureWithPlaywright(this.root);
     if (!capture) return;
     fs.mkdirSync(p.snapshot, { recursive: true });
     this.capturing = sha;
+    const opened: { close: () => Promise<void> }[] = [];
+    const open = async () => {
+      const preview = await this.openPreview(sha, p);
+      opened.push(preview);
+      return preview.url;
+    };
     try {
-      const ok = await capture({ dist: p.dist, basePath: historyBasePath(sha), out: p.thumbnail, log });
+      const ok = await capture({ open, out: p.thumbnail, log });
       if (!ok) fs.rmSync(p.snapshot, { recursive: true, force: true });
     } catch (err) {
       log(`\n[redline] Thumbnail skipped: ${err instanceof Error ? err.message : String(err)}\n`);
       fs.rmSync(p.snapshot, { recursive: true, force: true });
     } finally {
+      await Promise.all(opened.map((o) => o.close()));
       this.capturing = null;
     }
   }
@@ -593,27 +743,14 @@ async function loadChromium(root: string): Promise<ChromiumLike | null> {
   return null;
 }
 
-/**
- * Screenshot the build with Playwright, if it is installed. Serves `dist` on a throwaway
- * localhost port so capture does not depend on the dev server. Skips when Playwright or its
- * browser is missing.
- */
+/** Screenshot the build with Playwright, if it is installed. Skips when Playwright or its browser is missing. */
 export function captureWithPlaywright(root: string): CaptureFn {
-  return async ({ dist, basePath, out, log }) => {
+  return async ({ open, out, log }) => {
     const chromium = await loadChromium(root);
     if (!chromium) {
       log('\n[redline] Thumbnail skipped: Playwright is not installed.\n');
       return false;
     }
-    const server = http.createServer((req, res) => {
-      const pathname = new URL(req.url ?? '/', 'http://localhost').pathname;
-      const file = pathname.startsWith(basePath) ? resolveStaticFile(dist, pathname.slice(basePath.length)) : null;
-      if (file) sendFile(res, file);
-      else res.writeHead(404).end();
-    });
-    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-    const address = server.address();
-    const port = address && typeof address === 'object' ? address.port : 0;
     let browser: BrowserLike | null = null;
     try {
       try {
@@ -623,13 +760,12 @@ export function captureWithPlaywright(root: string): CaptureFn {
         return false;
       }
       const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
-      await page.goto(`http://127.0.0.1:${port}${basePath}`, { waitUntil: 'networkidle', timeout: 15_000 });
+      await page.goto(await open(), { waitUntil: 'networkidle', timeout: 15_000 });
       await page.screenshot({ path: out });
       log(`\n[redline] Thumbnail saved.\n`);
       return true;
     } finally {
       await browser?.close();
-      await new Promise((resolve) => server.close(resolve));
     }
   };
 }

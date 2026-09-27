@@ -20,6 +20,6 @@ import { RedlineOverlay } from '@vedantb/redline';
 <RedlineOverlay />;
 ```
 
-In the toolbar's History panel, click a commit to build it (Vite) in a separate git worktree and view it in an iframe at `/__redline/h/<sha>/`.
+In the toolbar's History panel, click a commit to build it in a separate git worktree and view it in an iframe at `/__redline/h/<sha>/`. Vite builds are served as static files. Next.js builds use `output: 'standalone'`, and Redline proxies them to `node server.js`, which it starts on first view.
 
 Full documentation, including Next.js set-up, baseline modes and History builds: https://github.com/vvedantb/redline#readme

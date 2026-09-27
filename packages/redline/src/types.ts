@@ -71,6 +71,13 @@ export interface LogResponse {
 
 export type BuildFramework = 'vite' | 'next';
 
+export interface RedlineHistoryOptions {
+  /** Ready builds kept in `.redline/builds`. Default 5. */
+  maxBuilds?: number;
+  /** Screenshot each ready build with Playwright, when installed. Default true. */
+  thumbnails?: boolean;
+}
+
 /** Build job lifecycle: `queued` → `building` → `ready` or `failed`. */
 export type BuildStatus = 'queued' | 'building' | 'ready' | 'failed';
 

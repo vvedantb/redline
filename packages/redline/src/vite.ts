@@ -4,13 +4,9 @@ import { BuildManager, DEFAULT_MAX_READY } from './build';
 import { createMiddleware } from './http';
 import { DEFAULT_EXTENSIONS, type RedlineServerOptions } from './server';
 import { shouldTransform, transformSource } from './transform';
+import type { RedlineHistoryOptions } from './types';
 
-export interface RedlineHistoryOptions {
-  /** Ready builds kept in `.redline/builds`. Default 5. */
-  maxBuilds?: number;
-  /** Screenshot each ready build with Playwright, when installed. Default true. */
-  thumbnails?: boolean;
-}
+export type { RedlineHistoryOptions };
 
 export interface RedlineViteOptions {
   /**

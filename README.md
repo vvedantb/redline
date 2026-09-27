@@ -86,14 +86,23 @@ export default withRedline({
 });
 ```
 
-Add the API route that serves the endpoints. `withRedline` rewrites `/__redline/:action` to `/api/redline/:action`.
+Add the API route that serves the endpoints. `withRedline` rewrites `/__redline/:path*` to `/api/redline/:path*`. The route must be a catch-all (`[...action]`), because `build/log`, `build/thumb` and the History proxy under `h/<sha>/` have more than one segment. Export every method, so that History previews can handle form posts and Server Actions.
 
 ```ts
-// app/api/redline/[action]/route.ts
+// app/api/redline/[...action]/route.ts
 import { createRedlineHandler } from '@vedantb/redline/next';
 
-export const { GET, POST } = createRedlineHandler();
+export const { GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS } = createRedlineHandler();
 ```
+
+If you are upgrading, rename `app/api/redline/[action]` to `app/api/redline/[...action]`. The old single-segment route still serves `diff`, `baseline`, `pin` and the other one-segment endpoints, but not History builds.
+
+`createRedlineHandler(options)` accepts the `withRedline` options plus:
+
+| Option | Default | What it does |
+| --- | --- | --- |
+| `root` | `process.cwd()` | Project root. `.redline/` lives here. Under `next dev` this is the app directory. |
+| `history` | `{ maxBuilds: 5, thumbnails: true }` | History builds. `appDir` is the Next.js app relative to `root`, for a monorepo where `root` is the repository top level. `maxBuilds` and `thumbnails` work as for Vite. `false` turns History builds off, and the build endpoints answer `501`. |
 
 Render the overlay from a client component:
 
@@ -106,7 +115,7 @@ export function DevTools() {
 }
 ```
 
-`withRedline(config, options)` accepts `enabled`, `apiRoute` (default `/api/redline`), `baselineFile` and `extensions`. When `NODE_ENV` is `production` and `enabled` is not `true`, it returns your config unchanged and the route handler reports `enabled: false`. In dev it also sets `NEXT_PUBLIC_REDLINE=1`.
+`withRedline(config, options)` accepts `enabled`, `apiRoute` (default `/api/redline`), `baselineFile` and `extensions`. When `NODE_ENV` is `production` and `enabled` is not `true`, it returns your config unchanged and the route handler reports `enabled: false`. `REDLINE=0` in the environment does the same, even with `enabled: true`. In dev it also sets `NEXT_PUBLIC_REDLINE=1`.
 
 The Next.js integration is covered by unit tests. The E2E suite runs against the Vite demo.
 
@@ -163,9 +172,9 @@ These helpers also mirror the baseline to `localStorage` (`redline:baseline`). I
 | `GET /__redline/build/log?sha=<ref>` | The full `build.log`, as `text/plain`. |
 | `GET /__redline/build/thumb?sha=<sha>` | The thumbnail PNG, if one was captured. |
 | `DELETE /__redline/build?sha=<ref>` | Cancels a queued or running build and deletes its files. |
-| `GET /__redline/h/<sha>/*` | Static files of a ready build. Paths without an extension fall back to `index.html`. |
+| `GET /__redline/h/<sha>/*` | A ready build. Vite: static files, and paths without an extension fall back to `index.html`. Next.js: every method is reverse-proxied to the build's standalone server. |
 
-Build endpoints are Vite only for now. On Next.js they answer `501`.
+Build endpoints work with Vite and Next.js. On Next.js they need the catch-all API route above. With `history: false` they answer `501`.
 
 From the browser, `getLog({ limit })` wraps `/__redline/log`.
 
@@ -205,7 +214,7 @@ The history panel lists recent commits, newest first, from `GET /__redline/log`.
 
 Outlines are drawn on the live app only. They are hidden while you view a commit. Viewing a commit does not pin it and does not change `.redline/baseline.json`. The choice is held in memory, so a page reload returns to Latest.
 
-How a build runs (one at a time):
+How a Vite build runs (one at a time):
 
 1. `git worktree add --detach .redline/worktrees/<sha> <sha>`. Your working tree and branch are never checked out, restored or reset.
 2. Dependencies: if the lockfile at that commit matches the one on disk, Redline links your `node_modules` into the worktree. Otherwise it runs `npm ci` (or `pnpm install --frozen-lockfile`, `yarn install`, `bun install`) in the worktree.
@@ -237,7 +246,67 @@ curl -X POST localhost:5173/__redline/build -H 'content-type: application/json' 
 curl localhost:5173/__redline/build  # watch the job move to ready
 ```
 
-Next.js: History builds are not supported yet. A follow-up will run `next build` with `basePath` and serve the static export, or run `next start` for apps that need a server. Until then, the build endpoints answer `501` and a Next job fails with a clear message.
+#### Next.js History builds
+
+The badges, log tail, **Retry** and **Latest** work as for Vite. The iframe loads the same same-origin URL, `/__redline/h/<sha>/`. Redline does not iframe a localhost port.
+
+How a Next.js build runs (one at a time, in the same queue as Vite):
+
+1. `git worktree add --detach .redline/worktrees/<sha> <sha>`. Your working tree is never checked out, restored or reset.
+2. Redline checks that the app directory in the worktree is a Next.js app. It looks for a `next.config.*` file, a `next` dependency, or an `app/` or `pages/` directory. If it finds none, the job fails straight away with a hint to set `history.appDir`.
+3. Dependencies are linked or installed, as for Vite.
+4. Env files are copied from your working tree into the worktree: from the git top level and, in a monorepo, from the app directory. Redline copies `.env`, `.env.local`, `.env.development`, `.env.production` and `.env.<name>.local`, when present. A file committed at that commit is kept and not overwritten. Having no env files is fine.
+5. The app's `next.config.*` in the worktree is renamed to `next.config.redline-user.*`. A wrapper with the original name imports it and forces `output: 'standalone'`, `basePath: '/__redline/h/<sha>'` and `distDir: '.next'`. It also sets `outputFileTracingRoot` and `turbopack.root` to the git top level, so that linked `node_modules` stay inside the tracing root. It removes `assetPrefix` and `env.NEXT_PUBLIC_REDLINE`. Your committed config does not need `output: 'standalone'`, and the config file in your working tree is not changed.
+6. `next build` runs in the worktree app directory with `NODE_ENV=production` and `REDLINE=0`. Redline adds `--webpack` if the app's `build` script uses it. Redline strips the dev server's own variables (`__NEXT_*`, `NEXT_PRIVATE_*`, `TURBOPACK*`, `PORT`, `HOSTNAME`) from the environment. `withRedline` and `createRedlineHandler` are off under `REDLINE=0`, so the snapshot has no tags, no overlay and no Redline endpoints.
+7. `.next/standalone` moves to `.redline/builds/<sha>/standalone/`. Then `.next/static` and `public/` go next to `server.js`. Next mirrors the app's path from the tracing root, so `server.js` sits at `standalone/<path from git top to the worktree app>/server.js`. A build is ready only when that `server.js` exists.
+8. The worktree is removed, whether the build worked or not.
+
+The first request for `/__redline/h/<sha>/` starts `node server.js` in that directory. It runs on a free port, with `PORT=<port>`, `HOSTNAME=127.0.0.1`, `NODE_ENV=production` and `REDLINE=0`. The API route then proxies the request to it. The path is forwarded unchanged, because the snapshot was built with the History base path. So `_next/static`, `next/link` and `next/image` all resolve under `/__redline/h/<sha>/`. The proxy sets `x-forwarded-host` and `x-forwarded-proto`, so that Server Actions pass their origin check. It turns redirects to the local port into same-origin paths and keeps every `Set-Cookie` header. Paths with `.`, `..`, encoded slashes, backslashes or NUL are rejected with `404`. Server output goes to `.redline/builds/<sha>/server.log`.
+
+Each ready build that has been viewed keeps one server running. Redline stops the server when the build is removed (`DELETE`, Retry or LRU eviction) and when the dev server exits. Thumbnails start the server, take the screenshot and stop it again.
+
+The snapshot server inherits the dev server's environment, less the variables listed in step 6. Env files copied into the worktree are also used at build time, so `NEXT_PUBLIC_*` values are inlined as they are today. The copies are deleted with the worktree. For an app that needs a database or auth provider (CarePulse, for example), the preview uses the same credentials as your dev server. Treat `.redline/` as sensitive, and keep it in `.gitignore`.
+
+Monorepo (Turborepo, pnpm or npm workspaces). If `next dev` runs in `apps/web`, the default `root` is `apps/web`. Redline finds the git top level itself, so you need no extra options. If you set `root` to the repository top level instead, add `appDir`:
+
+```ts
+// apps/web/app/api/redline/[...action]/route.ts
+import path from 'node:path';
+import { createRedlineHandler } from '@vedantb/redline/next';
+
+export const { GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS } = createRedlineHandler({
+  root: path.resolve(process.cwd(), '../..'),
+  history: { appDir: 'apps/web', maxBuilds: 3 },
+});
+```
+
+Next.js disk layout (`root` is the app directory in this example):
+
+```
+.redline/
+  builds/<sha>/meta.json      framework: "next", status, timestamps, basePath, error
+  builds/<sha>/build.log      worktree, install, env copy, next build
+  builds/<sha>/server.log     output of node server.js
+  builds/<sha>/standalone/    .next/standalone, with .next/static and public/ added
+    node_modules/             traced dependencies
+    <app path>/server.js      <app path> is the worktree app relative to the git top level,
+    <app path>/.next/static     for example apps/web/.redline/worktrees/<sha>/apps/web
+    <app path>/public
+  worktrees/<sha>/            only while a build runs
+```
+
+To try it on a Next.js app:
+
+```sh
+npm run build -w @vedantb/redline     # then install the package in your app
+# add withRedline to next.config.*, the [...action] route above and <RedlineOverlay />
+next dev
+curl -X POST localhost:3000/__redline/build -H 'content-type: application/json' -d '{"sha":"HEAD~1"}'
+curl localhost:3000/__redline/build     # watch the job move to ready
+open http://localhost:3000/__redline/h/$(git rev-parse HEAD~1)/
+```
+
+Or open the app, click **History** in the toolbar, then click a commit. The unit tests cover the Next.js path (`packages/redline/test/standalone.test.ts`). It was also tested by hand on Next 16.3.6 with Turbopack and linked `node_modules`. The E2E suite runs against the Vite demo.
 
 The overlay is off when any of these is true:
 
@@ -304,7 +373,9 @@ e2e/               Playwright tests and baseline fixtures
 ## Limits
 
 - Only JSX host elements are tagged. Elements created with `React.createElement` or rendered by third-party components in `node_modules` are not.
-- History builds are Vite only. They need your dependencies to build that commit. In a monorepo where the app imports a workspace package that is built from source (like this repo's demo), linking `node_modules` uses the current build of that package, and a fresh install may fail if the package's build output is not committed.
+- History builds need your dependencies to build that commit. In a monorepo where the app imports a workspace package that is built from source (like this repo's demo), linking `node_modules` uses the current build of that package, and a fresh install may fail if the package's build output is not committed.
 - History builds of client-side routers need the router to respect Vite's `base` (`import.meta.env.BASE_URL`).
+- Next.js History builds override `basePath`, `assetPrefix`, `distDir` and the tracing root for the snapshot. Code that hard-codes root-relative URLs (for example `fetch('/api/x')`, not through `next/link` or the base path) calls the live dev server, not the snapshot. `next build` must succeed at that commit, type checks and lint included.
+- Each Next.js preview is a separate Node process. It uses the memory that `next start` would. Lower `history.maxBuilds` if that is a problem.
 - The toolbar can be moved with a pointer only. There is no keyboard control for its position.
 - The endpoints run `git` commands and builds in the project root. They are meant for local dev servers and must not be exposed publicly.
