@@ -1,4 +1,5 @@
 import { defineConfig, devices } from '@playwright/test';
+import { FAKE_CONVEX_URL } from './e2e/env';
 
 const PORT = 5199;
 
@@ -21,5 +22,6 @@ export default defineConfig({
     url: `http://localhost:${PORT}`,
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
+    env: { VITE_CONVEX_URL: FAKE_CONVEX_URL },
   },
 });

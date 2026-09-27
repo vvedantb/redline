@@ -76,6 +76,11 @@ export interface RedlineHistoryOptions {
   maxBuilds?: number;
   /** Screenshot each ready build with Playwright, when installed. Default true. */
   thumbnails?: boolean;
+  /**
+   * Fixtures replayed to History pages by the read-only network layer, served at
+   * `/__redline/network/fixtures`. Default `<root>/.redline/network-fixtures.json`.
+   */
+  networkFixtures?: string;
 }
 
 /** Build job lifecycle: `queued` → `building` → `ready` or `failed`. */

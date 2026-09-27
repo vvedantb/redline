@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "request": { "method": "GET", "url": "/api/demo/notes" },
+      "response": {
+        "status": 200,
+        "headers": { "content-type": "application/json" },
+        "body": { "notes": [{ "id": "1", "text": "Fixture note from History" }] }
+      }
+    }
+  ]
+}

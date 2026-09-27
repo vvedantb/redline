@@ -13,4 +13,5 @@ export {
 export type { BaselineInfo, BaselineState, PinInput, EndpointOptions } from './client/baseline';
 export { TOOLBAR_PREFS_KEY } from './client/prefs';
 export type { ToolbarPrefs } from './client/prefs';
+export type { NetworkFixtureEntry, NetworkFixtures, NetworkMode, RedlineNetworkState } from './network/runtime';
 export * from './core';

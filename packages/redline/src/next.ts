@@ -2,11 +2,14 @@ import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { BuildManager, DEFAULT_MAX_READY } from './build';
+import { defaultFixturesFile, injectBootstrap, networkAsset } from './network/serve';
 import { ENDPOINT } from './paths';
 import { handleRedlineRequest, DEFAULT_EXTENSIONS, type RedlineServerOptions } from './server';
 import { historyTarget, proxyRequest } from './standalone';
 import { TRANSFORM_FILE } from './transform';
 import type { RedlineHistoryOptions } from './types';
+
+export { HISTORY_ENV_ALLOWLIST, HISTORY_ENV_STRIP_KEYS, HISTORY_ENV_STRIP_VALUE, isHistoryEnvKeyAllowed } from './env';
 
 export interface RedlineNextOptions {
   /** Force on/off. Default: on when NODE_ENV !== 'production'. */
@@ -164,6 +167,7 @@ function sharedBuilds(root: string, history: RedlineNextHistoryOptions): BuildMa
       framework: 'next',
       maxReady: history.maxBuilds ?? DEFAULT_MAX_READY,
       capture: history.thumbnails === false ? false : undefined,
+      networkFixtures: history.networkFixtures,
     });
     registry.set(key, builds);
   }
@@ -201,7 +205,10 @@ async function serveHistory(opts: RedlineServerOptions, request: Request, action
     return plain(502, `The History server did not start: ${err instanceof Error ? err.message : String(err)}`);
   }
   if (!origin) return plain(404, 'No ready build for this commit');
-  return proxyRequest(request, origin, target.path + new URL(request.url).search);
+  const res = await proxyRequest(request, origin, target.path + new URL(request.url).search);
+  if (request.method !== 'GET' || !(res.headers.get('content-type') ?? '').includes('text/html')) return res;
+  // Buffer HTML pages to add the read-only network bootstrap. Other responses stream.
+  return new Response(injectBootstrap(await res.text()), { status: res.status, statusText: res.statusText, headers: res.headers });
 }
 
 function serveThumbnail(opts: RedlineServerOptions, url: URL): Response {
@@ -217,6 +224,8 @@ export async function handleRedlineNextRequest(request: Request, opts: RedlineSe
   const action = redlineAction(url.pathname, apiRoute);
   if (action.startsWith('h/')) return serveHistory(opts, request, action);
   if (action === 'build/thumb') return serveThumbnail(opts, url);
+  const asset = opts.enabled !== false && request.method === 'GET' ? networkAsset(action, opts.builds?.fixturesFile ?? defaultFixturesFile(opts.root)) : null;
+  if (asset) return new Response(asset.body, { headers: { 'Content-Type': asset.contentType, 'Cache-Control': 'no-store' } });
   let body: unknown = {};
   if (request.method === 'POST') {
     const text = await request.text();

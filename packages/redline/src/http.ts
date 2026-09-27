@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { resolveStaticFile, sendFile } from './build';
+import { resolveStaticFile, sendFile, sendHistoryFile } from './build';
+import { defaultFixturesFile, sendNetworkAsset } from './network/serve';
 import { ENDPOINT, HISTORY_PREFIX, isFullSha } from './paths';
 import { handleRedlineRequest, type RedlineServerOptions } from './server';
 
@@ -48,7 +49,7 @@ function serveHistory(opts: RedlineServerOptions, url: URL, req: IncomingMessage
   }
   const file = resolveStaticFile(dist, rest.join('/'));
   if (!file) return notFound(res);
-  sendFile(res, file, req.method);
+  sendHistoryFile(res, file, req.method);
 }
 
 function serveThumbnail(opts: RedlineServerOptions, url: URL, req: IncomingMessage, res: ServerResponse): void {
@@ -69,6 +70,10 @@ export function createMiddleware(getOptions: () => RedlineServerOptions) {
       return serveHistory(getOptions(), url, req, res);
     }
     if (action === 'build/thumb') return serveThumbnail(getOptions(), url, req, res);
+    const opts = getOptions();
+    if (opts.enabled !== false && (method === 'GET' || method === 'HEAD')) {
+      if (sendNetworkAsset(res, url.pathname, opts.builds?.fixturesFile ?? defaultFixturesFile(opts.root), method)) return;
+    }
 
     let status = 200;
     let body: unknown;

@@ -5,6 +5,8 @@ import http from 'node:http';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { filterEnvRecord } from './env';
+import { defaultFixturesFile, injectBootstrap, sendNetworkAsset } from './network/serve';
 import { historyBasePath, isFullSha } from './paths';
 import {
   ServerPool,
@@ -62,6 +64,8 @@ export interface BuildManagerOptions {
   capture?: CaptureFn | false;
   /** Starts a Next.js standalone `server.js`. Injected in tests. */
   spawnServer?: SpawnServerFn;
+  /** Fixtures for the History network layer. Default `<root>/.redline/network-fixtures.json`. */
+  networkFixtures?: string;
 }
 
 export const DEFAULT_MAX_READY = 5;
@@ -178,6 +182,22 @@ export function sendFile(res: http.ServerResponse, file: string, method = 'GET')
   fs.createReadStream(file)
     .on('error', () => res.destroy())
     .pipe(res);
+}
+
+/** `sendFile` for a History build: HTML gets the read-only network bootstrap in its `<head>`. */
+export function sendHistoryFile(res: http.ServerResponse, file: string, method = 'GET'): void {
+  if (!file.endsWith('.html')) return sendFile(res, file, method);
+  let html: string;
+  try {
+    html = injectBootstrap(fs.readFileSync(file, 'utf8'));
+  } catch {
+    res.destroy();
+    return;
+  }
+  res.statusCode = 200;
+  res.setHeader('Content-Type', contentType(file));
+  res.setHeader('Cache-Control', 'no-store');
+  res.end(method === 'HEAD' ? undefined : html);
 }
 
 /** Read `meta.json`. Returns null when missing or malformed. */
@@ -325,6 +345,8 @@ interface Layout {
 
 export class BuildManager {
   readonly root: string;
+  /** Fixtures replayed to History pages. */
+  readonly fixturesFile: string;
   private readonly options: BuildManagerOptions;
   private readonly exec: ExecFn;
   private readonly servers: ServerPool;
@@ -339,6 +361,7 @@ export class BuildManager {
   constructor(options: BuildManagerOptions) {
     this.options = options;
     this.root = options.root;
+    this.fixturesFile = options.networkFixtures ?? defaultFixturesFile(options.root);
     this.exec = options.exec ?? spawnExec;
     this.servers = new ServerPool({ spawn: options.spawnServer });
     this.load();
@@ -596,12 +619,17 @@ export class BuildManager {
 
   /**
    * Env files are usually gitignored, so the worktree has none. Copy the live ones in from the
-   * git top and the config directory. Vite and Next both inline public env at build time.
+   * git top and the config directory, filtered to public keys. Vite and Next both inline public
+   * env at build time.
    */
   private copyLiveEnvFiles(p: BuildPaths, wtConfigDir: string, log: Log): void {
     const { top, configDir, rel } = this.layout();
-    const copied = [...copyEnvFiles(top, p.worktree), ...(rel ? copyEnvFiles(configDir, wtConfigDir).map((n) => path.join(rel, n)) : [])];
-    log(`\n[redline] ${copied.length > 0 ? `Copied env files: ${copied.join(', ')}` : 'No env files to copy'}.\n`);
+    const copied = [
+      ...copyEnvFiles(top, p.worktree),
+      ...(rel ? copyEnvFiles(configDir, wtConfigDir).map((f) => ({ ...f, name: path.join(rel, f.name) })) : []),
+    ];
+    const list = copied.map((f) => `${f.name} (kept ${f.kept} key${f.kept === 1 ? '' : 's'}, stripped ${f.stripped})`).join(', ');
+    log(`\n[redline] ${copied.length > 0 ? `Copied filtered env files: ${list}` : 'No env files to copy'}.\n`);
   }
 
   private async buildVite(sha: string, p: BuildPaths, run: Run, log: Log): Promise<void> {
@@ -611,8 +639,9 @@ export class BuildManager {
     this.copyLiveEnvFiles(p, wtConfigDir, log);
     const args = [viteBin(wtConfigDir), 'build', '--base', historyBasePath(sha), '--outDir', p.dist, '--emptyOutDir'];
     if (this.options.configFile) args.push('--config', path.join(p.worktree, path.relative(top, fs.realpathSync(this.options.configFile))));
-    // REDLINE=0 turns off tagging and endpoints in the built app.
-    await run(process.execPath, args, wtConfigDir, { ...process.env, NODE_ENV: 'production', REDLINE: '0' });
+    // REDLINE=0 turns off tagging and endpoints in the built app. Secret and Convex keys in the
+    // shell would otherwise be inlined as `import.meta.env.VITE_*`.
+    await run(process.execPath, args, wtConfigDir, { ...filterEnvRecord(process.env), NODE_ENV: 'production', REDLINE: '0' });
   }
 
   /**
@@ -680,8 +709,9 @@ export class BuildManager {
     }
     const server = http.createServer((req, res) => {
       const pathname = new URL(req.url ?? '/', 'http://localhost').pathname;
+      if (sendNetworkAsset(res, pathname, this.fixturesFile)) return;
       const file = pathname.startsWith(basePath) ? resolveStaticFile(p.dist, pathname.slice(basePath.length)) : null;
-      if (file) sendFile(res, file);
+      if (file) sendHistoryFile(res, file);
       else res.writeHead(404).end();
     });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));

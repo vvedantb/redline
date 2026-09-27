@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import net from 'node:net';
 import path from 'node:path';
+import { filterEnvRecord, filterEnvText } from './env';
 import { HISTORY_PREFIX, isFullSha } from './paths';
 
 /**
@@ -125,25 +126,35 @@ export function writeSnapshotConfig(appDir: string, overrides: SnapshotOverrides
 /** `.env`, `.env.local`, `.env.development`, `.env.production` and `.env.<name>.local`. */
 export const ENV_FILE = /^\.env(\.local|\.development|\.production|\.[\w-]+\.local)?$/;
 
+export interface CopiedEnvFile {
+  name: string;
+  /** Allowlisted keys written to the copy. */
+  kept: number;
+  /** Keys left out. */
+  stripped: number;
+}
+
 /**
- * Copy env files from `from` to `to`. Files that exist in `to` (for example committed at that
- * commit) are kept. Returns the names copied. Missing env files are fine.
+ * Copy env files from `from` to `to`, filtered to allowlisted public keys (see `env.ts`).
+ * Files that exist in `to` (for example committed at that commit) are kept. Returns what was
+ * copied. Missing env files are fine.
  */
-export function copyEnvFiles(from: string, to: string): string[] {
+export function copyEnvFiles(from: string, to: string): CopiedEnvFile[] {
   let names: string[];
   try {
     names = fs.readdirSync(from);
   } catch {
     return [];
   }
-  const copied: string[] = [];
+  const copied: CopiedEnvFile[] = [];
   for (const name of names.filter((n) => ENV_FILE.test(n)).sort()) {
     const src = path.join(from, name);
     const dest = path.join(to, name);
     try {
       if (!fs.statSync(src).isFile() || fs.existsSync(dest)) continue;
-      fs.copyFileSync(src, dest);
-      copied.push(name);
+      const { text, kept, stripped } = filterEnvText(fs.readFileSync(src, 'utf8'));
+      fs.writeFileSync(dest, text);
+      copied.push({ name, kept, stripped });
     } catch {
       // Unreadable or vanished: skip it.
     }
@@ -152,12 +163,13 @@ export function copyEnvFiles(from: string, to: string): string[] {
 }
 
 /**
- * Environment for `next build` and the standalone server, without the variables the running
- * Next dev server sets for itself. Those would leak dev-server state into the snapshot.
+ * Environment for `next build` and the standalone server, without secret or Convex keys and
+ * without the variables the running Next dev server sets for itself. Those would leak
+ * dev-server state into the snapshot.
  */
 export function snapshotEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const out: NodeJS.ProcessEnv = {};
-  for (const [key, value] of Object.entries(env)) {
+  for (const [key, value] of Object.entries(filterEnvRecord(env))) {
     if (/^(__NEXT|NEXT_PRIVATE_|TURBOPACK)/.test(key)) continue;
     if (key === 'NEXT_RUNTIME' || key === 'NEXT_PUBLIC_REDLINE' || key === 'PORT' || key === 'HOSTNAME') continue;
     out[key] = value;
