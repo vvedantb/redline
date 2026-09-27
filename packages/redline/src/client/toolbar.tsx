@@ -1,5 +1,5 @@
 import { useRef, type CSSProperties, type PointerEvent } from 'react';
-import type { CommitInfo } from '../types';
+import type { BuildJob, BuildStatus, CommitInfo } from '../types';
 import { setToolbarPrefs, type ToolbarPrefs } from './prefs';
 
 const MONO = 'ui-monospace, SFMono-Regular, Menlo, monospace';
@@ -124,12 +124,76 @@ export type HistoryState =
   | { status: 'ready'; headSha: string | null; commits: CommitInfo[] };
 
 export interface HistoryPanelProps {
+  endpoint: string;
   history: HistoryState;
+  builds: Record<string, BuildJob>;
+  buildError: string | null;
   viewing: CommitInfo | null;
   onSelect: (commit: CommitInfo) => void;
+  onRetry: (commit: CommitInfo) => void;
   onLatest: () => void;
   onRefresh: () => void;
   onClose: () => void;
+}
+
+const BUILD_LABEL: Record<BuildStatus, string> = {
+  queued: 'Queued',
+  building: 'Building',
+  ready: 'Ready',
+  failed: 'Failed',
+};
+
+const BUILD_COLOR: Record<BuildStatus, string> = {
+  queued: '#6b7280',
+  building: '#b45309',
+  ready: '#047857',
+  failed: '#b91c1c',
+};
+
+function BuildBadge({ job }: { job: BuildJob | undefined }) {
+  if (!job) return <span style={{ color: '#9ca3af' }}>Not built</span>;
+  return (
+    <span data-redline-build={job.status} style={{ color: BUILD_COLOR[job.status], fontWeight: 600 }}>
+      {BUILD_LABEL[job.status]}
+      {job.status === 'building' || job.status === 'queued' ? '…' : ''}
+    </span>
+  );
+}
+
+/** Screenshot of a ready build, or a grey placeholder while there is none. */
+function Thumb({ endpoint, job }: { endpoint: string; job: BuildJob | undefined }) {
+  const box: CSSProperties = { flex: 'none', width: 64, height: 40, borderRadius: 3, background: '#e5e7eb', overflow: 'hidden' };
+  if (job?.thumbnail !== 'ready') return <div aria-hidden="true" data-redline-thumb={job?.thumbnail ?? 'none'} style={box} />;
+  return (
+    <img
+      alt=""
+      data-redline-thumb=""
+      src={`${endpoint}/build/thumb?sha=${job.sha}&t=${encodeURIComponent(job.finishedAt ?? '')}`}
+      style={{ ...box, objectFit: 'cover', objectPosition: 'top' }}
+    />
+  );
+}
+
+function LogTail({ lines }: { lines: string[] | undefined }) {
+  if (!lines?.length) return null;
+  return (
+    <pre
+      data-redline-log=""
+      style={{
+        margin: '4px 0 0',
+        padding: 6,
+        maxHeight: 120,
+        overflow: 'auto',
+        background: '#f3f4f6',
+        borderRadius: 3,
+        font: `11px/1.4 ${MONO}`,
+        whiteSpace: 'pre-wrap',
+        wordBreak: 'break-all',
+      }}
+    >
+      {lines.join('\n')}
+    </pre>
+  );
 }
 
 function timeAgo(iso: string): string {
@@ -153,10 +217,13 @@ function timeAgo(iso: string): string {
   return `${value}${unit} ago`;
 }
 
-/** Commit list. Selecting a commit only changes which baseline the overlay diffs against. */
-export function HistoryPanel({ history, viewing, onSelect, onLatest, onRefresh, onClose }: HistoryPanelProps) {
+/** Commit list. Selecting a commit queues a production build of it and shows it when ready. */
+export function HistoryPanel(props: HistoryPanelProps) {
+  const { endpoint, history, builds, buildError, viewing, onSelect, onRetry, onLatest, onRefresh, onClose } = props;
   const row = (active: boolean): CSSProperties => ({
-    display: 'block',
+    display: 'flex',
+    gap: 10,
+    alignItems: 'center',
     width: '100%',
     textAlign: 'left',
     padding: '8px 12px',
@@ -198,13 +265,20 @@ export function HistoryPanel({ history, viewing, onSelect, onLatest, onRefresh, 
         </button>
       </header>
       <p style={{ margin: 0, padding: '8px 12px', color: '#6b7280', fontSize: 12 }}>
-        Pick a commit to outline what changed since it. Your files are not touched. Outlines use the running code, so they
-        may drift for old commits.
+        Pick a commit to build it and see the app as it was. Builds run in a separate git worktree, so your files are
+        not touched. Latest returns to the live app.
       </p>
+      {buildError && (
+        <p role="alert" style={{ padding: '0 12px 8px', margin: 0, color: '#b91c1c', fontSize: 12 }}>
+          {buildError}
+        </p>
+      )}
       <div style={{ flex: 1, overflow: 'auto' }}>
         <button type="button" data-redline-commit="latest" aria-current={!viewing} onClick={onLatest} style={row(!viewing)}>
-          <div style={{ fontWeight: 600 }}>Latest</div>
-          <div style={{ color: '#6b7280', fontSize: 12 }}>Pinned baseline</div>
+          <div>
+            <div style={{ fontWeight: 600 }}>Latest</div>
+            <div style={{ color: '#6b7280', fontSize: 12 }}>Live app with outlines</div>
+          </div>
         </button>
         {history.status === 'loading' && <p style={{ padding: '8px 12px', margin: 0 }}>Loading…</p>}
         {history.status === 'error' && (
@@ -215,25 +289,94 @@ export function HistoryPanel({ history, viewing, onSelect, onLatest, onRefresh, 
         {history.status === 'ready' &&
           history.commits.map((c) => {
             const active = viewing?.sha === c.sha;
+            const job = builds[c.sha];
             return (
-              <button
-                key={c.sha}
-                type="button"
-                data-redline-commit={c.sha}
-                aria-current={active}
-                onClick={() => onSelect(c)}
-                title={c.sha}
-                style={row(active)}
-              >
-                <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.subject}</div>
-                <div style={{ color: '#6b7280', fontSize: 12 }}>
-                  <code style={{ font: `12px ${MONO}` }}>{c.shortSha}</code>
-                  {c.sha === history.headSha ? ' · HEAD' : ''} · {c.author} · {timeAgo(c.date)}
-                </div>
-              </button>
+              <div key={c.sha}>
+                <button
+                  type="button"
+                  data-redline-commit={c.sha}
+                  aria-current={active}
+                  onClick={() => onSelect(c)}
+                  title={c.sha}
+                  style={row(active)}
+                >
+                  <Thumb endpoint={endpoint} job={job} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.subject}</div>
+                    <div style={{ color: '#6b7280', fontSize: 12 }}>
+                      <code style={{ font: `12px ${MONO}` }}>{c.shortSha}</code>
+                      {c.sha === history.headSha ? ' · HEAD' : ''} · {c.author} · {timeAgo(c.date)}
+                    </div>
+                    <div style={{ fontSize: 12 }}>
+                      <BuildBadge job={job} />
+                    </div>
+                  </div>
+                </button>
+                {job && (job.status === 'building' || job.status === 'failed') && (
+                  <div style={{ padding: '0 12px 8px 15px' }}>
+                    {job.error && <div style={{ color: '#b91c1c', fontSize: 12 }}>{job.error}</div>}
+                    <LogTail lines={job.logTail} />
+                    {job.status === 'failed' && (
+                      <button type="button" onClick={() => onRetry(c)} style={{ ...buttonStyle, marginTop: 4 }}>
+                        Retry
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
             );
           })}
       </div>
     </aside>
+  );
+}
+
+export interface HistoryFrameProps {
+  commit: CommitInfo;
+  job: BuildJob | undefined;
+  error: string | null;
+  onRetry: () => void;
+}
+
+/**
+ * The selected commit's production build in an iframe, or its build status until it is ready.
+ * Rendered under the toolbar and History panel, so both stay usable.
+ */
+export function HistoryFrame({ commit, job, error, onRetry }: HistoryFrameProps) {
+  const surface: CSSProperties = {
+    position: 'fixed',
+    inset: 0,
+    width: '100%',
+    height: '100%',
+    border: 0,
+    pointerEvents: 'auto',
+    background: '#fff',
+  };
+  if (job?.status === 'ready') {
+    return <iframe data-redline-frame={commit.sha} title={`Redline build of ${commit.shortSha}`} src={job.basePath} style={surface} />;
+  }
+  const label = job ? BUILD_LABEL[job.status] : error ? 'Failed' : 'Queued';
+  return (
+    <div
+      data-redline-frame-status={job?.status ?? 'queued'}
+      style={{ ...surface, display: 'grid', placeItems: 'center', color: '#111827', font: '13px/1.5 system-ui, sans-serif' }}
+    >
+      <div style={{ width: 'min(560px, 90vw)' }}>
+        <div style={{ fontWeight: 600 }}>
+          {label} <code style={{ font: `13px ${MONO}` }}>{commit.shortSha}</code>
+          {job?.status === 'building' || job?.status === 'queued' ? '…' : ''}
+        </div>
+        <div style={{ color: '#6b7280', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {commit.subject}
+        </div>
+        {(job?.error ?? error) && <div style={{ color: '#b91c1c', marginTop: 4 }}>{job?.error ?? error}</div>}
+        <LogTail lines={job?.logTail} />
+        {(job?.status === 'failed' || (!job && error)) && (
+          <button type="button" onClick={onRetry} style={{ ...buttonStyle, marginTop: 8 }}>
+            Retry
+          </button>
+        )}
+      </div>
+    </div>
   );
 }

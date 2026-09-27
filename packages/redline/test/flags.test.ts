@@ -40,4 +40,8 @@ describe('isOverlayEnabled', () => {
     expect(isOverlayEnabled({ production: true })).toBe(false);
     expect(isOverlayEnabled({ production: true, enabled: true })).toBe(true);
   });
+
+  it('is off inside a History build, even when forced on', () => {
+    expect(isOverlayEnabled({ historyFrame: true, enabled: true, search: '?redline=1' })).toBe(false);
+  });
 });

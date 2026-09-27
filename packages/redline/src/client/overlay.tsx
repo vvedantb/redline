@@ -2,11 +2,13 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties }
 import { createPortal } from 'react-dom';
 import { isOverlayEnabled, STORAGE_DISABLED_KEY } from '../flags';
 import { matchChangedRegions, type TaggedNode } from '../match';
+import { HISTORY_PREFIX } from '../paths';
 import { SOURCE_ATTR, parseSource } from '../source';
-import type { CommitInfo, DiffFile, DiffHunk, DiffResponse } from '../types';
+import type { BuildJob, CommitInfo, DiffFile, DiffHunk, DiffResponse } from '../types';
 import { DEFAULT_ENDPOINT, REFRESH_EVENT, getLog } from './baseline';
+import { buildStore, useBuilds } from './builds';
 import { useToolbarPrefs } from './prefs';
-import { HistoryPanel, Toolbar, type HistoryState } from './toolbar';
+import { HistoryFrame, HistoryPanel, Toolbar, type HistoryState } from './toolbar';
 
 export interface RedlineOverlayProps {
   /** Base URL of the Redline endpoints. Default `/__redline`. */
@@ -56,6 +58,7 @@ function readFlags(props: RedlineOverlayProps, serverEnabled?: boolean): boolean
     reducedMotion: window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false,
     respectReducedMotion: props.respectReducedMotion,
     production: isProduction(),
+    historyFrame: window.location.pathname.startsWith(HISTORY_PREFIX),
   });
 }
 
@@ -88,7 +91,8 @@ function collectRegions(diff: DiffResponse, root: Element | null): Region[] {
 
 const shortSha = (sha: string | null) => (sha ? sha.replace(/^content:/, 'content ').slice(0, 15) : 'none');
 
-function statusText(diff: DiffResponse | null, count: number, outlines: boolean): string {
+function statusText(diff: DiffResponse | null, count: number, outlines: boolean, viewing: CommitInfo | null, job?: BuildJob): string {
+  if (viewing) return `Redline: build of ${viewing.shortSha} ${job ? job.status : 'queued'}`;
   if (!diff) return 'Redline: waiting for dev server';
   if (diff.mode === 'none') return diff.error ? `Redline: ${diff.error}` : 'Redline: no baseline pinned';
   const hidden = outlines ? '' : ' (hidden)';
@@ -105,12 +109,14 @@ export function RedlineOverlay(props: RedlineOverlayProps) {
   const [regions, setRegions] = useState<Region[]>([]);
   const [selected, setSelected] = useState<Region | null>(null);
   const [mounted, setMounted] = useState(false);
-  // View-mode: diff against this commit instead of the pinned baseline. Never pins or checks out.
+  // History view: show a production build of this commit in an iframe. Never pins or checks out.
   const [viewing, setViewing] = useState<CommitInfo | null>(null);
   const [history, setHistory] = useState<HistoryState | null>(null);
   const prefs = useToolbarPrefs();
   const rootRef = useRef<HTMLDivElement>(null);
-  const diffBaseline = viewing?.sha ?? baseline;
+  const historyOpen = history !== null;
+  const builds = useBuilds(endpoint, historyOpen || viewing !== null);
+  const viewingJob = viewing ? builds.builds[viewing.sha] : undefined;
 
   useEffect(() => setMounted(true), []);
 
@@ -140,7 +146,7 @@ export function RedlineOverlay(props: RedlineOverlayProps) {
 
   const fetchDiff = useCallback(async () => {
     try {
-      const qs = diffBaseline ? `?baseline=${encodeURIComponent(diffBaseline)}` : '';
+      const qs = baseline ? `?baseline=${encodeURIComponent(baseline)}` : '';
       const res = await fetch(`${endpoint}/diff${qs}`, { cache: 'no-store' });
       const json = (await res.json()) as DiffResponse;
       if (!res.ok) {
@@ -151,7 +157,7 @@ export function RedlineOverlay(props: RedlineOverlayProps) {
     } catch {
       setDiff(null);
     }
-  }, [endpoint, diffBaseline]);
+  }, [endpoint, baseline]);
 
   useEffect(() => {
     if (!clientActive) return;
@@ -198,7 +204,6 @@ export function RedlineOverlay(props: RedlineOverlayProps) {
     setRegions(collectRegions(diff, rootRef.current));
   }, [active, diff, layoutTick]);
 
-  const historyOpen = history !== null;
   useEffect(() => {
     if (!selected && !historyOpen) return;
     const onKey = (e: KeyboardEvent) => {
@@ -226,6 +231,7 @@ export function RedlineOverlay(props: RedlineOverlayProps) {
   const view = (commit: CommitInfo | null) => {
     setSelected(null);
     setViewing(commit);
+    if (commit) void buildStore(endpoint).request(commit.sha);
   };
 
   if (!mounted || !active || typeof document === 'undefined') return null;
@@ -234,7 +240,17 @@ export function RedlineOverlay(props: RedlineOverlayProps) {
 
   return createPortal(
     <div ref={rootRef} data-redline-root="" style={layer}>
-      {prefs.outlines && regions.map((r) => {
+      {viewing && (
+        <HistoryFrame
+          commit={viewing}
+          job={viewingJob}
+          error={builds.error}
+          onRetry={() => void buildStore(endpoint).request(viewing.sha)}
+        />
+      )}
+
+      {/* Outlines describe the live app only. */}
+      {prefs.outlines && !viewing && regions.map((r) => {
         const rect = r.el.getBoundingClientRect();
         if (rect.width === 0 && rect.height === 0) return null;
         const label = `${r.file.path}:${r.line}`;
@@ -285,7 +301,7 @@ export function RedlineOverlay(props: RedlineOverlayProps) {
 
       <Toolbar
         prefs={prefs}
-        status={statusText(diff, regions.length, prefs.outlines)}
+        status={statusText(diff, regions.length, prefs.outlines, viewing, viewingJob)}
         viewing={viewing}
         historyOpen={historyOpen}
         onToggleHistory={() => (historyOpen ? setHistory(null) : void loadHistory())}
@@ -294,9 +310,13 @@ export function RedlineOverlay(props: RedlineOverlayProps) {
 
       {history && (
         <HistoryPanel
+          endpoint={endpoint}
           history={history}
+          builds={builds.builds}
+          buildError={builds.error}
           viewing={viewing}
           onSelect={view}
+          onRetry={(c) => void buildStore(endpoint).request(c.sha)}
           onLatest={() => view(null)}
           onRefresh={() => void loadHistory()}
           onClose={() => setHistory(null)}

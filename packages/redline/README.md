@@ -20,4 +20,6 @@ import { RedlineOverlay } from '@vedantb/redline';
 <RedlineOverlay />;
 ```
 
-Full documentation, including Next.js set-up and baseline modes: https://github.com/vvedantb/redline#readme
+In the toolbar's History panel, click a commit to build it (Vite) in a separate git worktree and view it in an iframe at `/__redline/h/<sha>/`.
+
+Full documentation, including Next.js set-up, baseline modes and History builds: https://github.com/vvedantb/redline#readme

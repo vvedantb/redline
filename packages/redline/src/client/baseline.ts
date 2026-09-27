@@ -1,6 +1,7 @@
+import { ENDPOINT } from '../paths';
 import type { BaselineMode, LogResponse } from '../types';
 
-export const DEFAULT_ENDPOINT = '/__redline';
+export const DEFAULT_ENDPOINT = ENDPOINT;
 export const LOCAL_BASELINE_KEY = 'redline:baseline';
 export const REFRESH_EVENT = 'redline:refresh';
 

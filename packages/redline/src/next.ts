@@ -156,6 +156,12 @@ export function createRedlineHandler(options: RedlineNextOptions & { root?: stri
       }
     }
     const res = handleRedlineRequest(serverOptions(), action, request.method, url.searchParams, body);
+    if (res.text !== undefined) {
+      return new Response(res.text, {
+        status: res.status,
+        headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' },
+      });
+    }
     return Response.json(res.body, { status: res.status, headers: { 'Cache-Control': 'no-store' } });
   };
 
