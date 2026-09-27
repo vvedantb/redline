@@ -594,10 +594,21 @@ export class BuildManager {
     }
   }
 
+  /**
+   * Env files are usually gitignored, so the worktree has none. Copy the live ones in from the
+   * git top and the config directory. Vite and Next both inline public env at build time.
+   */
+  private copyLiveEnvFiles(p: BuildPaths, wtConfigDir: string, log: Log): void {
+    const { top, configDir, rel } = this.layout();
+    const copied = [...copyEnvFiles(top, p.worktree), ...(rel ? copyEnvFiles(configDir, wtConfigDir).map((n) => path.join(rel, n)) : [])];
+    log(`\n[redline] ${copied.length > 0 ? `Copied env files: ${copied.join(', ')}` : 'No env files to copy'}.\n`);
+  }
+
   private async buildVite(sha: string, p: BuildPaths, run: Run, log: Log): Promise<void> {
     const { top } = this.layout();
     const wtConfigDir = await this.addWorktree(sha, p, run, log);
     await this.installDependencies(p, run, log);
+    this.copyLiveEnvFiles(p, wtConfigDir, log);
     const args = [viteBin(wtConfigDir), 'build', '--base', historyBasePath(sha), '--outDir', p.dist, '--emptyOutDir'];
     if (this.options.configFile) args.push('--config', path.join(p.worktree, path.relative(top, fs.realpathSync(this.options.configFile))));
     // REDLINE=0 turns off tagging and endpoints in the built app.
@@ -610,15 +621,13 @@ export class BuildManager {
    * into `.redline/builds/<sha>/standalone`.
    */
   private async buildNext(sha: string, p: BuildPaths, run: Run, log: Log): Promise<void> {
-    const { top, configDir, rel } = this.layout();
+    const { top, rel } = this.layout();
     const wtApp = await this.addWorktree(sha, p, run, log);
     if (!isNextApp(wtApp)) {
       throw new Error(`No Next.js app at ${rel || '.'} in this commit. For a monorepo, set history.appDir.`);
     }
     await this.installDependencies(p, run, log);
-    // Env files are usually gitignored, so the worktree has none. Copy the live ones in.
-    const copied = [...copyEnvFiles(top, p.worktree), ...(rel ? copyEnvFiles(configDir, wtApp).map((n) => path.join(rel, n)) : [])];
-    log(`\n[redline] ${copied.length > 0 ? `Copied env files: ${copied.join(', ')}` : 'No env files to copy'}.\n`);
+    this.copyLiveEnvFiles(p, wtApp, log);
     writeSnapshotConfig(wtApp, { basePath: historyBasePath(sha).replace(/\/$/, ''), tracingRoot: top });
     log(`\n[redline] Snapshot config: output 'standalone', basePath ${historyBasePath(sha).replace(/\/$/, '')}.\n`);
     await run(process.execPath, [nextBin(wtApp), 'build', ...nextBuildFlags(wtApp)], wtApp, snapshotEnv(process.env));
