@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import { handleRedlineRequest, DEFAULT_EXTENSIONS, type RedlineServerOptions } from './server';
 import { TRANSFORM_FILE } from './transform';
@@ -16,10 +18,12 @@ type Rewrite = { source: string; destination: string };
 type Rewrites = Rewrite[] | { beforeFiles?: Rewrite[]; afterFiles?: Rewrite[]; fallback?: Rewrite[] };
 
 /** The wrapped config. Fields are optional because a disabled wrapper returns the input unchanged. */
-export type RedlineNextConfig<T> = Omit<T, 'env' | 'webpack' | 'rewrites'> & {
+export type RedlineNextConfig<T> = Omit<T, 'env' | 'webpack' | 'rewrites' | 'turbopack' | 'experimental'> & {
   env?: Record<string, string>;
   webpack?: (config: AnyConfig, ctx: AnyConfig) => AnyConfig;
   rewrites?: () => Promise<any>;
+  turbopack?: AnyConfig;
+  experimental?: AnyConfig;
 };
 
 function isEnabled(options: RedlineNextOptions): boolean {
@@ -29,12 +33,50 @@ function isEnabled(options: RedlineNextOptions): boolean {
 /** Absolute path to the webpack loader that adds `data-redline-source`. */
 export const loaderPath = path.join(__dirname, 'loader.cjs');
 
+/** Turbopack glob for the files the loader tags. */
+export const TURBOPACK_GLOB = '**/*.{tsx,jsx}';
+
+/** Installed Next.js version as `[major, minor]`, or null when `next` cannot be resolved. */
+export function detectNextVersion(cwd = process.cwd()): [number, number] | null {
+  try {
+    const pkg = createRequire(path.join(cwd, 'package.json')).resolve('next/package.json');
+    const m = /^(\d+)\.(\d+)/.exec(JSON.parse(fs.readFileSync(pkg, 'utf8')).version);
+    return m ? [Number(m[1]), Number(m[2])] : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Next 15.3 moved Turbopack config from `experimental.turbo` to top-level `turbopack`. */
+export function usesLegacyTurboKey(version: [number, number] | null): boolean {
+  if (!version) return false;
+  const [major, minor] = version;
+  return major < 15 || (major === 15 && minor < 3);
+}
+
+/**
+ * Add the Redline loader to a Turbopack `rules` object without dropping user rules.
+ * If the user already has a rule for the same glob, the loader is appended to its
+ * `loaders` so it runs first, on the original JSX.
+ */
+export function mergeTurbopackRules(rules: AnyConfig | undefined, root: string): AnyConfig {
+  const loader = { loader: loaderPath, options: { root } };
+  const existing = rules?.[TURBOPACK_GLOB];
+  if (existing === undefined) return { ...(rules ?? {}), [TURBOPACK_GLOB]: { loaders: [loader] } };
+  if (existing && Array.isArray(existing.loaders)) {
+    return { ...rules, [TURBOPACK_GLOB]: { ...existing, loaders: [...existing.loaders, loader] } };
+  }
+  console.warn(`[redline] turbopack.rules['${TURBOPACK_GLOB}'] has an unexpected shape; Redline did not add its loader.`);
+  return { ...rules };
+}
+
 /**
  * Wrap a Next.js config.
  *
- * In dev it adds a webpack pre-loader that tags JSX host elements, sets
- * `NEXT_PUBLIC_REDLINE=1`, and rewrites `/__redline/:action` to your API route.
- * Turbopack is not supported yet: run `next dev --webpack` on Next 16+.
+ * In dev it tags JSX host elements under both bundlers: a Turbopack rule (`turbopack.rules`
+ * on Next 15.3+, `experimental.turbo.rules` before that) and a webpack pre-loader for
+ * `next dev --webpack`. Both use the same loader. It also sets `NEXT_PUBLIC_REDLINE=1`
+ * and rewrites `/__redline/:action` to your API route.
  */
 export function withRedline<T extends AnyConfig>(
   nextConfig: T = {} as T,
@@ -45,9 +87,23 @@ export function withRedline<T extends AnyConfig>(
   const userWebpack = nextConfig.webpack as ((config: AnyConfig, ctx: AnyConfig) => AnyConfig) | undefined;
   const userRewrites = nextConfig.rewrites as (() => Promise<Rewrites> | Rewrites) | undefined;
   const ours: Rewrite[] = [{ source: '/__redline/:action', destination: `${apiRoute}/:action` }];
+  const root = process.cwd();
+  // Follow the user's key if they already set one, otherwise pick by Next version.
+  const legacy =
+    nextConfig.turbopack === undefined &&
+    (nextConfig.experimental?.turbo !== undefined || usesLegacyTurboKey(detectNextVersion(root)));
+  const turbo = legacy
+    ? {
+        experimental: {
+          ...nextConfig.experimental,
+          turbo: { ...nextConfig.experimental?.turbo, rules: mergeTurbopackRules(nextConfig.experimental?.turbo?.rules, root) },
+        },
+      }
+    : { turbopack: { ...nextConfig.turbopack, rules: mergeTurbopackRules(nextConfig.turbopack?.rules, root) } };
 
   return {
     ...nextConfig,
+    ...turbo,
     env: { ...(nextConfig.env ?? {}), NEXT_PUBLIC_REDLINE: '1' },
     webpack(config: AnyConfig, ctx: AnyConfig) {
       const result = userWebpack ? userWebpack(config, ctx) : config;

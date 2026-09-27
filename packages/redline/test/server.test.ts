@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { computeDiff, handleRedlineRequest, pinBaseline, readBaseline } from '../src/server';
+import { computeDiff, getLog, handleRedlineRequest, pinBaseline, readBaseline } from '../src/server';
 
 function tmp(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'redline-'));
@@ -127,5 +127,61 @@ describe('git baseline', () => {
     pinBaseline({ root: sub });
     fs.writeFileSync(path.join(sub, 'src/A.tsx'), 'export const A = () => <p>b</p>;\n');
     expect(computeDiff({ root: sub }).files.map((f) => f.path)).toEqual(['src/A.tsx']);
+  });
+
+  it('lists commits newest first with a limit', () => {
+    fs.writeFileSync(path.join(root, 'src/Hero.tsx'), after);
+    git(root, 'commit', '-qam', 'B: subject | with ; punctuation');
+    const res = handleRedlineRequest({ root }, 'log', 'GET', new URLSearchParams(), {});
+    expect(res.status).toBe(200);
+    const body = res.body as { headSha: string; commits: { sha: string; shortSha: string; subject: string; author: string; date: string }[] };
+    expect(body.commits.map((c) => c.subject)).toEqual(['B: subject | with ; punctuation', 'A']);
+    expect(body.commits[0].sha).toBe(body.headSha);
+    expect(body.commits[1]).toMatchObject({ sha: first, author: 'Test' });
+    expect(first.startsWith(body.commits[1].shortSha)).toBe(true);
+    expect(Number.isNaN(Date.parse(body.commits[1].date))).toBe(false);
+    expect(getLog(root, 1)).toHaveLength(1);
+    const limited = handleRedlineRequest({ root }, 'log', 'GET', new URLSearchParams({ limit: 'abc' }), {});
+    expect((limited.body as { commits: unknown[] }).commits).toHaveLength(2);
+  });
+
+  it('returns no commits for a repo without commits or when disabled', () => {
+    const empty = tmp();
+    git(empty, 'init', '-q');
+    expect(getLog(empty)).toEqual([]);
+    expect(handleRedlineRequest({ root, enabled: false }, 'log', 'GET', new URLSearchParams(), {}).body).toMatchObject({
+      enabled: false,
+      commits: [],
+    });
+  });
+
+  it('reads a file at a ref without touching the working tree', () => {
+    fs.writeFileSync(path.join(root, 'src/Hero.tsx'), after);
+    const res = handleRedlineRequest({ root }, 'file', 'GET', new URLSearchParams({ path: 'src/Hero.tsx', ref: first }), {});
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ path: 'src/Hero.tsx', ref: first, content: before });
+    expect(fs.readFileSync(path.join(root, 'src/Hero.tsx'), 'utf8')).toBe(after);
+    expect(git(root, 'status', '--porcelain')).toBe('M src/Hero.tsx');
+  });
+
+  it('reads files relative to a sub-directory root', () => {
+    const sub = path.join(root, 'app');
+    fs.mkdirSync(path.join(sub, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(sub, 'src/A.tsx'), 'a\n');
+    git(root, 'add', '.');
+    git(root, 'commit', '-qm', 'app');
+    const res = handleRedlineRequest({ root: sub }, 'file', 'GET', new URLSearchParams({ path: 'src/A.tsx' }), {});
+    expect(res.body).toMatchObject({ path: 'src/A.tsx', content: 'a\n' });
+  });
+
+  it('rejects unsafe or missing file requests', () => {
+    const q = (params: Record<string, string>) => handleRedlineRequest({ root }, 'file', 'GET', new URLSearchParams(params), {});
+    expect(q({}).status).toBe(400);
+    expect(q({ path: '../outside.tsx' }).status).toBe(400);
+    expect(q({ path: '/etc/passwd' }).status).toBe(400);
+    expect(q({ path: 'README.md' }).status).toBe(400);
+    expect(q({ path: 'src/Missing.tsx' }).status).toBe(400);
+    expect(q({ path: 'src/Hero.tsx', ref: '--output=x' }).status).toBe(400);
+    expect(handleRedlineRequest({ root, enabled: false }, 'file', 'GET', new URLSearchParams({ path: 'src/Hero.tsx' }), {}).status).toBe(403);
   });
 });

@@ -3,6 +3,7 @@ export type { RedlineOverlayProps } from './client/overlay';
 export {
   pinBaseline,
   getBaseline,
+  getLog,
   clearBaseline,
   refreshRedline,
   DEFAULT_ENDPOINT,
@@ -10,4 +11,6 @@ export {
   REFRESH_EVENT,
 } from './client/baseline';
 export type { BaselineInfo, BaselineState, PinInput, EndpointOptions } from './client/baseline';
+export { TOOLBAR_PREFS_KEY } from './client/prefs';
+export type { ToolbarPrefs } from './client/prefs';
 export * from './core';

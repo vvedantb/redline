@@ -3,8 +3,10 @@ import { createPortal } from 'react-dom';
 import { isOverlayEnabled, STORAGE_DISABLED_KEY } from '../flags';
 import { matchChangedRegions, type TaggedNode } from '../match';
 import { SOURCE_ATTR, parseSource } from '../source';
-import type { DiffFile, DiffHunk, DiffResponse } from '../types';
-import { DEFAULT_ENDPOINT, REFRESH_EVENT } from './baseline';
+import type { CommitInfo, DiffFile, DiffHunk, DiffResponse } from '../types';
+import { DEFAULT_ENDPOINT, REFRESH_EVENT, getLog } from './baseline';
+import { useToolbarPrefs } from './prefs';
+import { HistoryPanel, Toolbar, type HistoryState } from './toolbar';
 
 export interface RedlineOverlayProps {
   /** Base URL of the Redline endpoints. Default `/__redline`. */
@@ -86,6 +88,14 @@ function collectRegions(diff: DiffResponse, root: Element | null): Region[] {
 
 const shortSha = (sha: string | null) => (sha ? sha.replace(/^content:/, 'content ').slice(0, 15) : 'none');
 
+function statusText(diff: DiffResponse | null, count: number, outlines: boolean): string {
+  if (!diff) return 'Redline: waiting for dev server';
+  if (diff.mode === 'none') return diff.error ? `Redline: ${diff.error}` : 'Redline: no baseline pinned';
+  const hidden = outlines ? '' : ' (hidden)';
+  const error = diff.error ? ` (${diff.error})` : '';
+  return `Redline: ${count} changed region${count === 1 ? '' : 's'} vs ${shortSha(diff.baselineSha)}${hidden}${error}`;
+}
+
 /** Draws outlines around rendered elements whose source changed since the pinned baseline. */
 export function RedlineOverlay(props: RedlineOverlayProps) {
   const { endpoint = DEFAULT_ENDPOINT, baseline, pollInterval = 2000, color = '#e11d48' } = props;
@@ -95,7 +105,12 @@ export function RedlineOverlay(props: RedlineOverlayProps) {
   const [regions, setRegions] = useState<Region[]>([]);
   const [selected, setSelected] = useState<Region | null>(null);
   const [mounted, setMounted] = useState(false);
+  // View-mode: diff against this commit instead of the pinned baseline. Never pins or checks out.
+  const [viewing, setViewing] = useState<CommitInfo | null>(null);
+  const [history, setHistory] = useState<HistoryState | null>(null);
+  const prefs = useToolbarPrefs();
   const rootRef = useRef<HTMLDivElement>(null);
+  const diffBaseline = viewing?.sha ?? baseline;
 
   useEffect(() => setMounted(true), []);
 
@@ -125,7 +140,7 @@ export function RedlineOverlay(props: RedlineOverlayProps) {
 
   const fetchDiff = useCallback(async () => {
     try {
-      const qs = baseline ? `?baseline=${encodeURIComponent(baseline)}` : '';
+      const qs = diffBaseline ? `?baseline=${encodeURIComponent(diffBaseline)}` : '';
       const res = await fetch(`${endpoint}/diff${qs}`, { cache: 'no-store' });
       const json = (await res.json()) as DiffResponse;
       if (!res.ok) {
@@ -136,7 +151,7 @@ export function RedlineOverlay(props: RedlineOverlayProps) {
     } catch {
       setDiff(null);
     }
-  }, [endpoint, baseline]);
+  }, [endpoint, diffBaseline]);
 
   useEffect(() => {
     if (!clientActive) return;
@@ -183,16 +198,35 @@ export function RedlineOverlay(props: RedlineOverlayProps) {
     setRegions(collectRegions(diff, rootRef.current));
   }, [active, diff, layoutTick]);
 
+  const historyOpen = history !== null;
   useEffect(() => {
-    if (!selected) return;
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setSelected(null);
+    if (!selected && !historyOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (selected) setSelected(null);
+      else setHistory(null);
+    };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [selected]);
+  }, [selected, historyOpen]);
 
   useEffect(() => {
     if (!active) setSelected(null);
   }, [active]);
+
+  const loadHistory = async () => {
+    setHistory({ status: 'loading' });
+    try {
+      const log = await getLog({ endpoint });
+      setHistory({ status: 'ready', headSha: log.headSha, commits: log.commits });
+    } catch (err) {
+      setHistory({ status: 'error', error: err instanceof Error ? err.message : String(err) });
+    }
+  };
+  const view = (commit: CommitInfo | null) => {
+    setSelected(null);
+    setViewing(commit);
+  };
 
   if (!mounted || !active || typeof document === 'undefined') return null;
 
@@ -200,7 +234,7 @@ export function RedlineOverlay(props: RedlineOverlayProps) {
 
   return createPortal(
     <div ref={rootRef} data-redline-root="" style={layer}>
-      {regions.map((r) => {
+      {prefs.outlines && regions.map((r) => {
         const rect = r.el.getBoundingClientRect();
         if (rect.width === 0 && rect.height === 0) return null;
         const label = `${r.file.path}:${r.line}`;
@@ -249,25 +283,24 @@ export function RedlineOverlay(props: RedlineOverlayProps) {
         );
       })}
 
-      {diff && diff.mode !== 'none' && (
-        <div
-          data-redline-status=""
-          role="status"
-          style={{
-            position: 'fixed',
-            left: 12,
-            bottom: 12,
-            pointerEvents: 'auto',
-            font: '12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace',
-            color: '#fff',
-            background: '#111827',
-            borderRadius: 4,
-            padding: '4px 8px',
-          }}
-        >
-          Redline: {regions.length} changed region{regions.length === 1 ? '' : 's'} vs {shortSha(diff.baselineSha)}
-          {diff.error ? ` (${diff.error})` : ''}
-        </div>
+      <Toolbar
+        prefs={prefs}
+        status={statusText(diff, regions.length, prefs.outlines)}
+        viewing={viewing}
+        historyOpen={historyOpen}
+        onToggleHistory={() => (historyOpen ? setHistory(null) : void loadHistory())}
+        onLatest={() => view(null)}
+      />
+
+      {history && (
+        <HistoryPanel
+          history={history}
+          viewing={viewing}
+          onSelect={view}
+          onLatest={() => view(null)}
+          onRefresh={() => void loadHistory()}
+          onClose={() => setHistory(null)}
+        />
       )}
 
       {selected && <HunkPanel region={selected} baselineSha={diff?.baselineSha ?? null} onClose={() => setSelected(null)} />}
