@@ -218,9 +218,10 @@ How a Vite build runs (one at a time):
 
 1. `git worktree add --detach .redline/worktrees/<sha> <sha>`. Your working tree and branch are never checked out, restored or reset.
 2. Dependencies: if the lockfile at that commit matches the one on disk, Redline links your `node_modules` into the worktree. Otherwise it runs `npm ci` (or `pnpm install --frozen-lockfile`, `yarn install`, `bun install`) in the worktree.
-3. `vite build --base /__redline/h/<sha>/ --outDir .redline/builds/<sha>/dist`, with `REDLINE=0` and `NODE_ENV=production`. Tagging and the overlay are off in the build. The overlay also stays off on any page under `/__redline/h/`, even with `enabled={true}`.
-4. The worktree is removed, whether the build worked or not.
-5. If Playwright and a Chromium browser are installed, Redline serves the build on a throwaway localhost port and saves a 1280×800 screenshot as the thumbnail. If not, it skips this step; the build still works.
+3. Env files are copied from your working tree into the worktree: from the git top level and, in a monorepo, from the Vite config directory. Redline copies `.env`, `.env.local`, `.env.development`, `.env.production` and `.env.<name>.local`, when present. A file committed at that commit is kept and not overwritten. Having no env files is fine. Vite inlines `import.meta.env.VITE_*` at build time, so an app that checks its client env when it loads (for example with t3-env) needs these files, or the same variables in the dev server's environment. Without them, the preview is blank.
+4. `vite build --base /__redline/h/<sha>/ --outDir .redline/builds/<sha>/dist`, with `REDLINE=0` and `NODE_ENV=production`. Tagging and the overlay are off in the build. The overlay also stays off on any page under `/__redline/h/`, even with `enabled={true}`.
+5. The worktree is removed, whether the build worked or not. The copied env files go with it, but their `VITE_*` values stay inlined in `dist/`.
+6. If Playwright and a Chromium browser are installed, Redline serves the build on a throwaway localhost port and saves a 1280×800 screenshot as the thumbnail. If not, it skips this step; the build still works.
 
 Job states: `queued` → `building` → `ready` or `failed`. Redline keeps the 5 most recently viewed ready builds (`history.maxBuilds`) and deletes older ones. Builds cut short by a dev server restart show as failed; click Retry.
 
@@ -375,6 +376,7 @@ e2e/               Playwright tests and baseline fixtures
 - Only JSX host elements are tagged. Elements created with `React.createElement` or rendered by third-party components in `node_modules` are not.
 - History builds need your dependencies to build that commit. In a monorepo where the app imports a workspace package that is built from source (like this repo's demo), linking `node_modules` uses the current build of that package, and a fresh install may fail if the package's build output is not committed.
 - History builds of client-side routers need the router to respect Vite's `base` (`import.meta.env.BASE_URL`).
+- Vite History builds inline your current `VITE_*` values, not the ones at that commit. Env files are copied from your working tree, not read from history.
 - Next.js History builds override `basePath`, `assetPrefix`, `distDir` and the tracing root for the snapshot. Code that hard-codes root-relative URLs (for example `fetch('/api/x')`, not through `next/link` or the base path) calls the live dev server, not the snapshot. `next build` must succeed at that commit, type checks and lint included.
 - Each Next.js preview is a separate Node process. It uses the memory that `next start` would. Lower `history.maxBuilds` if that is a problem.
 - The toolbar can be moved with a pointer only. There is no keyboard control for its position.

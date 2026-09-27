@@ -37,9 +37,13 @@ const deferred = () => {
   return { promise, resolve };
 };
 
-/** Fake commands: `git worktree add` makes the directory, installs add a vite package, vite writes dist. */
-function fakeExec(opts: { fail?: (sha: string) => boolean; gate?: Promise<void> } = {}) {
-  const calls: { cmd: string; args: string[]; cwd: string; env?: NodeJS.ProcessEnv }[] = [];
+/**
+ * Fake commands: `git worktree add` makes the directory (and `appDir` inside it), installs add a
+ * vite package, vite records the worktree files it saw and writes dist.
+ */
+function fakeExec(opts: { fail?: (sha: string) => boolean; gate?: Promise<void>; appDir?: string } = {}) {
+  const calls: { cmd: string; args: string[]; cwd: string; env?: NodeJS.ProcessEnv; files?: string[] }[] = [];
+  let worktree = '';
   let running = 0;
   let maxRunning = 0;
   const exec: ExecFn = async (cmd, args, { cwd, env, log }) => {
@@ -47,7 +51,8 @@ function fakeExec(opts: { fail?: (sha: string) => boolean; gate?: Promise<void> 
     log(`ran ${path.basename(cmd)} ${args[0]}\n`);
     if (cmd === 'git' && args[0] === 'worktree') {
       const wt = args[3];
-      fs.mkdirSync(wt, { recursive: true });
+      worktree = wt;
+      fs.mkdirSync(path.join(wt, opts.appDir ?? ''), { recursive: true });
       fs.writeFileSync(path.join(wt, 'package-lock.json'), '{}\n');
       return;
     }
@@ -57,6 +62,7 @@ function fakeExec(opts: { fail?: (sha: string) => boolean; gate?: Promise<void> 
       fs.writeFileSync(path.join(pkg, 'package.json'), JSON.stringify({ name: 'vite', bin: { vite: 'bin/vite.js' } }));
       return;
     }
+    calls[calls.length - 1].files = [...fs.readdirSync(worktree).map((n) => `/${n}`), ...fs.readdirSync(cwd)].sort();
     running++;
     maxRunning = Math.max(maxRunning, running);
     try {
@@ -279,6 +285,44 @@ describe('BuildManager', () => {
     builds.enqueue(shas[0]);
     await builds.whenIdle();
     expect(fake.calls.find((c) => c.cmd === 'npm')?.args).toEqual(['ci']);
+  });
+
+  it('copies live env files into the worktree before vite build', async () => {
+    // Gitignored in a real app, so never in the worktree.
+    fs.writeFileSync(path.join(root, '.env.local'), 'VITE_API_URL=live\n');
+    const fake = fakeExec();
+    const builds = new BuildManager({ root, exec: fake.exec, capture: false });
+    builds.enqueue(shas[0]);
+    await builds.whenIdle();
+    expect(builds.get(shas[0])?.status).toBe('ready');
+    expect(fake.calls.find((c) => c.cmd === process.execPath)?.files).toContain('/.env.local');
+    expect(fs.readFileSync(buildPaths(root, shas[0]).log, 'utf8')).toContain('Copied env files: .env.local');
+  });
+
+  it('copies env files from the git top and the config directory in a monorepo', async () => {
+    const appDir = path.join(root, 'apps', 'web');
+    fs.mkdirSync(appDir, { recursive: true });
+    fs.writeFileSync(path.join(root, '.env.local'), 'VITE_A=top\n');
+    fs.writeFileSync(path.join(appDir, '.env.local'), 'VITE_B=app\n');
+    const fake = fakeExec({ appDir: path.join('apps', 'web') });
+    const builds = new BuildManager({ root, configDir: appDir, exec: fake.exec, capture: false });
+    builds.enqueue(shas[0]);
+    await builds.whenIdle();
+    const p = buildPaths(root, shas[0]);
+    expect(builds.get(shas[0])?.status).toBe('ready');
+    const vite = fake.calls.find((c) => c.cmd === process.execPath);
+    expect(vite?.cwd).toBe(path.join(p.worktree, 'apps', 'web'));
+    expect(vite?.files).toEqual(expect.arrayContaining(['/.env.local', '.env.local']));
+    expect(fs.readFileSync(p.log, 'utf8')).toContain(`Copied env files: .env.local, ${path.join('apps', 'web', '.env.local')}`);
+  });
+
+  it('builds without env files', async () => {
+    const fake = fakeExec();
+    const builds = new BuildManager({ root, exec: fake.exec, capture: false });
+    builds.enqueue(shas[0]);
+    await builds.whenIdle();
+    expect(builds.get(shas[0])?.status).toBe('ready');
+    expect(fs.readFileSync(buildPaths(root, shas[0]).log, 'utf8')).toContain('No env files to copy');
   });
 
   it('marks builds interrupted by a restart as failed', () => {
