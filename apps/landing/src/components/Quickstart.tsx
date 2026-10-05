@@ -27,10 +27,10 @@ export function Quickstart() {
             </div>
           </div>
           <div className="snippets">
-            <Snippet label="terminal">{`npm install -D @vedantb/redline`}</Snippet>
+            <Snippet label="terminal">{`npm install -D @vvv/redline`}</Snippet>
             <Snippet label="vite.config.ts">
               {`import react from '@vitejs/plugin-react';
-import { redline } from '@vedantb/redline/vite';
+import { redline } from '@vvv/redline/vite';
 import { defineConfig } from 'vite';
 
 export default defineConfig({
@@ -38,7 +38,7 @@ export default defineConfig({
 });`}
             </Snippet>
             <Snippet label="App.tsx">
-              {`import { RedlineOverlay } from '@vedantb/redline/overlay';
+              {`import { RedlineOverlay } from '@vvv/redline/overlay';
 
 export function App() {
   return (
