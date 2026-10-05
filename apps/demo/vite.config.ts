@@ -1,5 +1,5 @@
 import react from '@vitejs/plugin-react';
-import { redline } from '@vedantb/redline/vite';
+import { redline } from '@vvv/redline/vite';
 import { fileURLToPath } from 'node:url';
 import { defineConfig, type Plugin } from 'vite';
 

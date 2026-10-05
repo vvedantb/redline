@@ -7,13 +7,13 @@
     "apps/*"
   ],
   "scripts": {
-    "build": "npm run build -w @vedantb/redline && npm run build -w redline-demo && npm run build -w redline-landing",
-    "test": "npm test -w @vedantb/redline",
-    "test:e2e": "npm run build -w @vedantb/redline && playwright test",
-    "dev": "npm run build -w @vedantb/redline && npm run dev -w redline-demo",
-    "typecheck": "npm run typecheck -w @vedantb/redline && npm run typecheck -w redline-demo && npm run typecheck -w redline-landing",
+    "build": "npm run build -w @vvv/redline && npm run build -w redline-demo && npm run build -w redline-landing",
+    "test": "npm test -w @vvv/redline",
+    "test:e2e": "npm run build -w @vvv/redline && playwright test",
+    "dev": "npm run build -w @vvv/redline && npm run dev -w redline-demo",
+    "typecheck": "npm run typecheck -w @vvv/redline && npm run typecheck -w redline-demo && npm run typecheck -w redline-landing",
     "dev:landing": "npm run dev -w redline-landing",
-    "test:compare": "npm run build -w @vedantb/redline && node scripts/compare-e2e.mjs"
+    "test:compare": "npm run build -w @vvv/redline && node scripts/compare-e2e.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.55.0",

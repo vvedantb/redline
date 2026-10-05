@@ -1,5 +1,5 @@
 {
-  "name": "@vedantb/redline",
+  "name": "@vvv/redline",
   "version": "0.1.0",
   "description": "See what a code change did to every page of your Vite or Next.js app: build two commits, screenshot each page, and get a before/after report.",
   "type": "module",

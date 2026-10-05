@@ -245,7 +245,7 @@ export async function handleRedlineNextRequest(request: Request, opts: RedlineSe
  * The catch-all segment carries `build/log` and the History proxy under `h/<sha>/...`:
  *
  * ```ts
- * import { createRedlineHandler } from '@vedantb/redline/next';
+ * import { createRedlineHandler } from '@vvv/redline/next';
  * export const { GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS } = createRedlineHandler();
  * ```
  */
