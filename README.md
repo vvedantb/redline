@@ -3,7 +3,7 @@
 Redline shows what a code change did to every page of your Vite or Next.js app. It builds two commits, screenshots each page at both, and writes a static report: which pages changed, which are new or gone, which look broken, and which files most likely caused each change.
 
 ```sh
-npm install -D @vvv/redline playwright
+npm install -D @vvedantb/redline playwright
 npx playwright install chromium
 npx redline compare            # HEAD~1 -> HEAD
 ```
@@ -63,7 +63,7 @@ Optional `redline.config.json` in the app directory:
 ## Node API
 
 ```ts
-import { compare, discoverRoutes, affectedRoutes } from '@vvv/redline';
+import { compare, discoverRoutes, affectedRoutes } from '@vvedantb/redline';
 
 // Everything the CLI does. Resolves with the report and its path.
 const { report, reportFile } = await compare({ root: 'apps/web', base: 'main', head: 'HEAD', seeds: ['/blog/hello'] });
@@ -107,14 +107,14 @@ Redline does not change your production build. The transform and endpoints run o
 
 ### Install
 
-Peer dependencies: `react` and `react-dom` 18 or later, plus `vite` 5 or later or `next` 13 or later. The overlay is imported from `@vvv/redline/overlay`.
+Peer dependencies: `react` and `react-dom` 18 or later, plus `vite` 5 or later or `next` 13 or later. The overlay is imported from `@vvedantb/redline/overlay`.
 
 ### Vite
 
 ```ts
 // vite.config.ts
 import react from '@vitejs/plugin-react';
-import { redline } from '@vvv/redline/vite';
+import { redline } from '@vvedantb/redline/vite';
 import { defineConfig } from 'vite';
 
 export default defineConfig({
@@ -126,7 +126,7 @@ export default defineConfig({
 Mount the overlay once, near the root of your app:
 
 ```tsx
-import { RedlineOverlay } from '@vvv/redline/overlay';
+import { RedlineOverlay } from '@vvedantb/redline/overlay';
 
 export function App() {
   return (
@@ -151,7 +151,7 @@ Set `REDLINE=0` in the environment to turn Redline off whatever `enabled` says. 
 
 ### Next.js
 
-`withRedline` tags JSX under both Turbopack and webpack. Both bundlers use the same loader (`@vvv/redline/loader`):
+`withRedline` tags JSX under both Turbopack and webpack. Both bundlers use the same loader (`@vvedantb/redline/loader`):
 
 - **Turbopack** (the default for `next dev` on Next 16): a rule for `**/*.{tsx,jsx}` is added to `turbopack.rules`. On Next versions before 15.3, it goes in `experimental.turbo.rules` instead. Redline picks the key from the installed `next` version. If your config already sets `experimental.turbo` (and not `turbopack`), Redline uses that key.
 - **webpack** (`next dev --webpack`, or Next versions before 16): a pre-loader is added in the `webpack()` hook. Your own `webpack` function still runs first.
@@ -165,7 +165,7 @@ Version notes:
 
 ```js
 // next.config.mjs
-import { withRedline } from '@vvv/redline/next';
+import { withRedline } from '@vvedantb/redline/next';
 
 export default withRedline({
   reactStrictMode: true,
@@ -176,7 +176,7 @@ Add the API route that serves the endpoints. `withRedline` rewrites `/__redline/
 
 ```ts
 // app/api/redline/[...action]/route.ts
-import { createRedlineHandler } from '@vvv/redline/next';
+import { createRedlineHandler } from '@vvedantb/redline/next';
 
 export const { GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS } = createRedlineHandler();
 ```
@@ -194,7 +194,7 @@ Render the overlay from a client component:
 
 ```tsx
 'use client';
-import { RedlineOverlay } from '@vvv/redline/overlay';
+import { RedlineOverlay } from '@vvedantb/redline/overlay';
 
 export function DevTools() {
   return <RedlineOverlay />;
@@ -226,7 +226,7 @@ Git mode diffs the working tree against the pinned commit. This includes committ
 From the browser:
 
 ```ts
-import { pinBaseline, getBaseline, clearBaseline } from '@vvv/redline/overlay';
+import { pinBaseline, getBaseline, clearBaseline } from '@vvedantb/redline/overlay';
 
 await pinBaseline();                  // pin HEAD
 await pinBaseline({ sha: 'abc1234' }); // pin a commit
@@ -361,7 +361,7 @@ Monorepo (Turborepo, pnpm or npm workspaces). If `next dev` runs in `apps/web`, 
 ```ts
 // apps/web/app/api/redline/[...action]/route.ts
 import path from 'node:path';
-import { createRedlineHandler } from '@vvv/redline/next';
+import { createRedlineHandler } from '@vvedantb/redline/next';
 
 export const { GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS } = createRedlineHandler({
   root: path.resolve(process.cwd(), '../..'),
@@ -387,7 +387,7 @@ Next.js disk layout (`root` is the app directory in this example):
 To try it on a Next.js app:
 
 ```sh
-npm run build -w @vvv/redline     # then install the package in your app
+npm run build -w @vvedantb/redline     # then install the package in your app
 # add withRedline to next.config.*, the [...action] route above and <RedlineOverlay />
 next dev
 curl -X POST localhost:3000/__redline/build -H 'content-type: application/json' -d '{"sha":"HEAD~1"}'
@@ -405,7 +405,7 @@ History is read-only. It must not reach a live backend or hold server secrets. S
 - Always stripped, even with a public prefix: any key that contains `CONVEX` (for example `VITE_CONVEX_URL`, `CONVEX_DEPLOY_KEY`); any key that matches `SECRET`, `PASSWORD`, `PRIVATE_KEY`, `API_KEY`, `ACCESS_TOKEN`, `AUTH_TOKEN`, `DEPLOY_KEY`, `DATABASE_URL` or `CREDENTIAL`; and any value that contains `convex.cloud` or `.convex.site`.
 - Dropped: every other key, comments and lines that are not `KEY=value`.
 
-The process environment for `vite build`, `next build` and the standalone server loses the always-stripped keys too. Other variables (`PATH`, `HOME` and so on) stay, because the build tools need them. `@vvv/redline/vite` and `@vvv/redline/next` export the rules as `HISTORY_ENV_ALLOWLIST`, `HISTORY_ENV_STRIP_KEYS` and `HISTORY_ENV_STRIP_VALUE`, and the check as `isHistoryEnvKeyAllowed(key, value)`. A custom Vite `envPrefix` is not on the allowlist.
+The process environment for `vite build`, `next build` and the standalone server loses the always-stripped keys too. Other variables (`PATH`, `HOME` and so on) stay, because the build tools need them. `@vvedantb/redline/vite` and `@vvedantb/redline/next` export the rules as `HISTORY_ENV_ALLOWLIST`, `HISTORY_ENV_STRIP_KEYS` and `HISTORY_ENV_STRIP_VALUE`, and the check as `isHistoryEnvKeyAllowed(key, value)`. A custom Vite `envPrefix` is not on the allowlist.
 
 ##### History network (read-only)
 
@@ -433,7 +433,7 @@ Fixture file format (synthetic data only; do not put secrets in it):
 
 `method` defaults to `GET` and `status` to `200`. A string `body` is sent as is; anything else is sent as JSON. URLs match on path and query, then on path alone. The host is ignored, and so are the `/__redline/h/<sha>` prefix and a trailing slash. So `/api/x`, `api/x` and `https://any.host/api/x/` all match `/api/x`.
 
-`window.__redlineNetwork` is `{ mode, readOnly, fixturesLoaded, lastMutation?, match(url, method?), dumpFixtures(), downloadFixtures() }`. The `NetworkFixtures` and `RedlineNetworkState` types are exported from `@vvv/redline`.
+`window.__redlineNetwork` is `{ mode, readOnly, fixturesLoaded, lastMutation?, match(url, method?), dumpFixtures(), downloadFixtures() }`. The `NetworkFixtures` and `RedlineNetworkState` types are exported from `@vvedantb/redline`.
 
 Capture: on a live Vite dev page, the plugin adds the same script, which does nothing unless the URL has `?redlineNetwork=capture`. Then it records same-origin JSON `GET` responses made with `fetch`. Call `__redlineNetwork.dumpFixtures()` in the console to see them, or `downloadFixtures()` to save `network-fixtures.json`. Review the file before you commit it: it holds whatever your live API returned. On Next.js, add the script tag to your root layout in dev to use capture.
 

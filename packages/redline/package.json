@@ -1,5 +1,5 @@
 {
-  "name": "@vvv/redline",
+  "name": "@vvedantb/redline",
   "version": "0.1.0",
   "description": "See what a code change did to every page of your Vite or Next.js app: build two commits, screenshot each page, and get a before/after report.",
   "type": "module",
@@ -96,6 +96,9 @@
     "vitest": "^3.2.4"
   },
   "bin": {
-    "redline": "./dist/cli.js"
+    "redline": "dist/cli.js"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }
