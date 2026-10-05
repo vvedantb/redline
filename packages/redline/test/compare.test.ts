@@ -180,7 +180,7 @@ describe('report', () => {
 
   it('lists pages that need attention and folds unchanged ones away', () => {
     const html = renderIndex(report);
-    expect(html).toContain('Changed</span><div class="path">/</div><div class="why">Likely from Button.jsx</div>');
+    expect(html).toContain('Changed</span><div class="path">/</div><div class="why">Likely from components/Button.jsx</div>');
     expect(html).toContain('New</span><div class="path">/pricing</div>');
     expect(html).toContain('<summary>1 unchanged page</summary>');
     expect(html).toContain('1 page(s) were not captured');

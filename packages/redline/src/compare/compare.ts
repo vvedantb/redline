@@ -223,7 +223,7 @@ export async function compare(options: CompareOptions = {}): Promise<CompareResu
         after: status === 'removed' ? null : shot(a, outDir),
         regions: keepRegions ? regions : [],
         changedRatio: keepRegions ? changedRatio : 0,
-        errors: [...new Set([...a.errors, ...a.consoleErrors].filter((e) => !b.errors.includes(e) && !b.consoleErrors.includes(e)))],
+        errors: status === 'removed' ? [] : [...new Set([...a.errors, ...a.consoleErrors].filter((e) => !b.errors.includes(e) && !b.consoleErrors.includes(e)))],
       });
       log(`  ${status.padEnd(9)} ${route.path}`);
     }

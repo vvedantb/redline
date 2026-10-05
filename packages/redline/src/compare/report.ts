@@ -121,7 +121,7 @@ function commitLine(r: Report): string {
 
 function suspectText(p: ReportPage, max = 3): string {
   if (!p.suspects.length) return '';
-  const files = p.suspects.slice(0, max).map((s) => s.file.split('/').pop()!);
+  const files = p.suspects.slice(0, max).map((s) => s.file);
   const more = p.suspects.length > max ? ` +${p.suspects.length - max}` : '';
   return `Likely from ${esc(files.join(', '))}${more}`;
 }
