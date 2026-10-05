@@ -1,4 +1,4 @@
-import { RedlineOverlay } from '@vvv/redline/overlay';
+import { RedlineOverlay } from '@vvedantb/redline/overlay';
 import { useState } from 'react';
 import { Footer } from './components/Footer';
 import { Header } from './components/Header';

@@ -1,9 +1,9 @@
-# @vvv/redline
+# @vvedantb/redline
 
 See what a code change did to every page of your Vite or Next.js app. Redline builds two commits, screenshots each page at both, and writes a static report: which pages changed, which are new or gone, which look broken, and which files most likely caused each change.
 
 ```sh
-npm install -D @vvv/redline playwright
+npm install -D @vvedantb/redline playwright
 npx playwright install chromium
 npx redline compare              # HEAD~1 -> HEAD
 npx redline compare main HEAD --seed /blog/hello
@@ -12,7 +12,7 @@ npx redline compare main HEAD --seed /blog/hello
 The report lists pages as **Looks broken**, **Changed**, **New**, **Removed**, **Couldn't check** or **Unchanged**, ranked, with thumbnails and suspect files. Each page has before and after side by side with numbered boxes on the changed areas, and a slider. `report.json` has the same data.
 
 ```ts
-import { compare, discoverRoutes, affectedRoutes } from '@vvv/redline';
+import { compare, discoverRoutes, affectedRoutes } from '@vvedantb/redline';
 
 const { report, reportFile } = await compare({ root: 'apps/web', base: 'main' });
 const { routes } = await discoverRoutes({ root: 'apps/web', baseUrl: 'http://localhost:3000' });
@@ -28,13 +28,13 @@ A separate, dev-only overlay outlines the rendered elements whose source changed
 ```ts
 // vite.config.ts
 import react from '@vitejs/plugin-react';
-import { redline } from '@vvv/redline/vite';
+import { redline } from '@vvedantb/redline/vite';
 
 export default { plugins: [redline(), react()] };
 ```
 
 ```tsx
-import { RedlineOverlay } from '@vvv/redline/overlay';
+import { RedlineOverlay } from '@vvedantb/redline/overlay';
 
 <RedlineOverlay />;
 ```

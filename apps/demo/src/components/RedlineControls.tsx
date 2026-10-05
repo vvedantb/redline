@@ -1,4 +1,4 @@
-import { clearBaseline, getBaseline, pinBaseline, REFRESH_EVENT, type BaselineState } from '@vvv/redline/overlay';
+import { clearBaseline, getBaseline, pinBaseline, REFRESH_EVENT, type BaselineState } from '@vvedantb/redline/overlay';
 import { useCallback, useEffect, useState } from 'react';
 
 interface Props {
