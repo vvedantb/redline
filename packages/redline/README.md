@@ -1,10 +1,29 @@
 # @vedantb/redline
 
-Pin a baseline commit, then see which rendered elements changed since it in your running Vite or Next.js app. Click an outline to see the diff hunk.
+See what a code change did to every page of your Vite or Next.js app. Redline builds two commits, screenshots each page at both, and writes a static report: which pages changed, which are new or gone, which look broken, and which files most likely caused each change.
 
 ```sh
-npm install -D @vedantb/redline
+npm install -D @vedantb/redline playwright
+npx playwright install chromium
+npx redline compare              # HEAD~1 -> HEAD
+npx redline compare main HEAD --seed /blog/hello
 ```
+
+The report lists pages as **Looks broken**, **Changed**, **New**, **Removed**, **Couldn't check** or **Unchanged**, ranked, with thumbnails and suspect files. Each page has before and after side by side with numbered boxes on the changed areas, and a slider. `report.json` has the same data.
+
+```ts
+import { compare, discoverRoutes, affectedRoutes } from '@vedantb/redline';
+
+const { report, reportFile } = await compare({ root: 'apps/web', base: 'main' });
+const { routes } = await discoverRoutes({ root: 'apps/web', baseUrl: 'http://localhost:3000' });
+const { routes: hit, removed } = affectedRoutes({ root: 'apps/web', changedFiles: ['components/Button.tsx'] });
+```
+
+Pages are found from file-system routes, a link crawl from `/`, `sitemap.xml`, and seeds in `redline.config.json` or `--seed`. Both commits are built in git worktrees and cached under `.redline/`; your working tree is never touched.
+
+## In-app overlay (optional)
+
+A separate, dev-only overlay outlines the rendered elements whose source changed since a pinned commit, in your running dev server:
 
 ```ts
 // vite.config.ts
@@ -15,13 +34,11 @@ export default { plugins: [redline(), react()] };
 ```
 
 ```tsx
-import { RedlineOverlay } from '@vedantb/redline';
+import { RedlineOverlay } from '@vedantb/redline/overlay';
 
 <RedlineOverlay />;
 ```
 
-In the toolbar's History panel, click a commit to build it in a separate git worktree and view it in an iframe at `/__redline/h/<sha>/`. Vite builds are served as static files. Next.js builds use `output: 'standalone'`, and Redline proxies them to `node server.js`, which it starts on first view.
+Full documentation, including the report, the API, Next.js set-up and the overlay's History builds: https://github.com/vvedantb/redline#readme
 
-History is read-only. Env files are copied into the build filtered to public keys, with secret and Convex keys stripped. History pages get a small network layer that replays `fetch` and XHR fixtures from `.redline/network-fixtures.json` and answers writes without touching the network.
-
-Full documentation, including Next.js set-up, baseline modes and History builds: https://github.com/vvedantb/redline#readme
+Route detection is ported from [pre-post](https://github.com/juangadm/pre-post) (MIT). See `THIRD_PARTY_NOTICES.md`.

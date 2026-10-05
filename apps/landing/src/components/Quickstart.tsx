@@ -38,7 +38,7 @@ export default defineConfig({
 });`}
             </Snippet>
             <Snippet label="App.tsx">
-              {`import { RedlineOverlay } from '@vedantb/redline';
+              {`import { RedlineOverlay } from '@vedantb/redline/overlay';
 
 export function App() {
   return (

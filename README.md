@@ -1,10 +1,100 @@
 # Redline
 
-Redline is a dev-only npm package for Vite and Next.js React apps. You pin a baseline commit. After an agent or a pull request edits your code, Redline outlines the rendered elements whose source changed since that baseline. Click an outline to see the diff hunk.
+Redline shows what a code change did to every page of your Vite or Next.js app. It builds two commits, screenshots each page at both, and writes a static report: which pages changed, which are new or gone, which look broken, and which files most likely caused each change.
 
-Package: `@vedantb/redline`
+```sh
+npm install -D @vedantb/redline playwright
+npx playwright install chromium
+npx redline compare            # HEAD~1 -> HEAD
+```
 
-## How it works
+Open the `index.html` path it prints. Redline is a CLI, a Node API and a static report you can open from disk or host anywhere, so any project or tool can use it.
+
+## The report
+
+The first page lists every page that needs a look, most important first, each with a thumbnail, a status and the files it most likely came from:
+
+| Status | Meaning |
+| --- | --- |
+| **Looks broken** | The page now returns a 5xx, shows the framework's error screen, throws a new uncaught error, turns blank, or shows "not found" while its route still exists. |
+| **Changed** | Pixels differ. Changed areas are boxed and numbered. |
+| **New** | The page exists only after the change. |
+| **Removed** | Its page file was deleted, or it is gone after the change. |
+| **Couldn't check** | Redline could not capture it: it redirects to sign-in, fails to load, is a dynamic route with no example URL, or is over the page limit. The reason is shown. |
+| **Unchanged** | Folded away at the bottom. |
+
+Click a page for before and after side by side with numbered boxes on the changed areas, a slider view, the suspect files with how many imports away each is, and any new errors. `report.json` holds the same data for tools.
+
+## How `compare` works
+
+1. **Build both commits.** Each commit is built in its own git worktree with the same engine as the overlay's History builds: `vite build --base /__redline/h/<sha>/`, or `next build` with `output: 'standalone'` and a matching `basePath`. Your working tree is never touched. `node_modules` is linked from the main tree when the lockfile is unchanged; otherwise the worktree installs. Builds are cached by commit under `.redline/`. The built pages run with History's read-only network layer, so they cannot write to your APIs.
+2. **Find the pages.** File-system routes (Next.js `app/` and `pages/`; Vite `src/pages`, `src/routes` and React Router declarations), a crawl of same-origin links two clicks deep from `/`, `sitemap.xml`, and seeds from you. A dynamic route such as `/blog/[slug]` is captured only through a concrete URL from one of those sources.
+3. **Capture.** Every page at both commits in headless Chromium, set up to repeat: fixed clock, seeded `Math.random`, reduced motion, animations and transitions off, caret hidden, dev overlays hidden, UTC and `en-US`, service workers off, wait for network idle and fonts, scroll to trigger lazy content. Full-page screenshots, cut at 4000px.
+4. **Diff.** Pixel diff with [pixelmatch](https://github.com/mapbox/pixelmatch). Changed pixels are grouped into boxes; specks under 100 square pixels are dropped.
+5. **Explain.** The changed files from `git diff` are traced through an import graph to the pages that use them (layouts wrap the pages under them; global CSS and Tailwind config reach every page). That gives each page its "Likely from" list and ranks direct causes first. If a scan limit is hit, the report says so.
+
+## CLI
+
+```
+redline compare [base] [head] [options]
+
+  base                 Commit to compare against (default HEAD~1)
+  head                 Commit to check (default HEAD)
+  --root <dir>         App directory (default: current directory)
+  --out <dir>          Report directory (default: <root>/.redline/report)
+  --max-routes <n>     Pages captured at most (default: 50)
+  --seed <path>        Extra page to capture, e.g. /blog/hello. Repeatable.
+  --viewport <WxH>     Viewport (default: 1280x800)
+  --chrome <path>      Chrome or Chromium binary to use
+```
+
+Run it from the app directory (in a monorepo, the package with the Next or Vite config). It exits with 1 on errors such as a failed build, and 0 otherwise, whatever the report says.
+
+Optional `redline.config.json` in the app directory:
+
+```json
+{
+  "seeds": ["/blog/hello", "/docs/getting-started"],
+  "maxRoutes": 50,
+  "viewport": { "width": 1280, "height": 800 }
+}
+```
+
+## Node API
+
+```ts
+import { compare, discoverRoutes, affectedRoutes } from '@vedantb/redline';
+
+// Everything the CLI does. Resolves with the report and its path.
+const { report, reportFile } = await compare({ root: 'apps/web', base: 'main', head: 'HEAD', seeds: ['/blog/hello'] });
+
+// Pages of an app: file-system routes, plus link crawl and sitemap when baseUrl is given.
+const { routes, skipped } = await discoverRoutes({ root: 'apps/web', baseUrl: 'http://localhost:3000' });
+
+// Which routes do these files touch? Paths are relative to root. No git or browser needed.
+const { routes: hit, removed, unplaced, limits } = affectedRoutes({
+  root: 'apps/web',
+  changedFiles: ['components/Button.tsx'],
+  deletedFiles: ['app/old/page.tsx'],
+});
+```
+
+`affectedRoutes` returns each route with its confidence and the files that reach it, closest first. Deleted page files come back in `removed`. `limits.filesCapped` and `limits.depthCapped` say when the 8000-file scan or the 8-import walk was cut short. `writeReport`, `diffImages` and `classify` are exported too, for tools that capture pages their own way.
+
+## Compare limits
+
+- Needs Playwright and Chromium (`npx playwright install chromium`), or `--chrome` pointing at an installed Chrome.
+- Pages behind sign-in are listed as "Couldn't check". There is no login step yet.
+- Pages that load data at runtime see History's read-only network layer: reads are replayed from `.redline/network-fixtures.json` when a fixture matches, writes never leave the browser. Pages that depend on live data may differ between runs.
+- Both commits must build. A failed build stops the run and prints the end of its log.
+- Client-side routers must respect Vite's `base` (`import.meta.env.BASE_URL`).
+- No AI labels yet: the report says where pixels changed and which files likely caused it, not what the change means.
+
+## In-app overlay (optional)
+
+Redline also ships a dev-only overlay. You pin a baseline commit; after an agent or a pull request edits your code, the overlay outlines the rendered elements whose source changed since that baseline, in your running dev server. Click an outline to see the diff hunk. It is independent of `compare`.
+
+### How it works
 
 1. A transform adds `data-redline-source="src/Hero.tsx:4-9"` (file, start line, end line) to every JSX host element (`div`, `h1`, `button` and so on) in dev.
 2. The dev server serves `/__redline/*`. `GET /__redline/diff` runs `git diff <baseline>` over `tsx`, `jsx`, `ts`, `js` and `css` files, adds untracked files, and returns parsed hunks.
@@ -15,15 +105,11 @@ Package: `@vedantb/redline`
 
 Redline does not change your production build. The transform and endpoints run only in dev unless you set `enabled: true`.
 
-## Install
+### Install
 
-```sh
-npm install -D @vedantb/redline
-```
+Peer dependencies: `react` and `react-dom` 18 or later, plus `vite` 5 or later or `next` 13 or later. The overlay is imported from `@vedantb/redline/overlay`.
 
-Peer dependencies: `react` and `react-dom` 18 or later, plus `vite` 5 or later or `next` 13 or later.
-
-## Vite
+### Vite
 
 ```ts
 // vite.config.ts
@@ -40,7 +126,7 @@ export default defineConfig({
 Mount the overlay once, near the root of your app:
 
 ```tsx
-import { RedlineOverlay } from '@vedantb/redline';
+import { RedlineOverlay } from '@vedantb/redline/overlay';
 
 export function App() {
   return (
@@ -63,7 +149,7 @@ Plugin options:
 
 Set `REDLINE=0` in the environment to turn Redline off whatever `enabled` says. History builds use this.
 
-## Next.js
+### Next.js
 
 `withRedline` tags JSX under both Turbopack and webpack. Both bundlers use the same loader (`@vedantb/redline/loader`):
 
@@ -108,7 +194,7 @@ Render the overlay from a client component:
 
 ```tsx
 'use client';
-import { RedlineOverlay } from '@vedantb/redline';
+import { RedlineOverlay } from '@vedantb/redline/overlay';
 
 export function DevTools() {
   return <RedlineOverlay />;
@@ -119,11 +205,11 @@ export function DevTools() {
 
 The Next.js integration is covered by unit tests. The E2E suite runs against the Vite demo.
 
-## Pinning a baseline
+### Pinning a baseline
 
 A baseline is the "last good" state that Redline diffs against. Redline stores it locally. There is no auth or backend. There are two ways to set it.
 
-### Local file (default)
+#### Local file (default)
 
 `POST /__redline/pin` writes `.redline/baseline.json` in the project root. Add `.redline/` to `.gitignore`. The request body picks the mode:
 
@@ -140,7 +226,7 @@ Git mode diffs the working tree against the pinned commit. This includes committ
 From the browser:
 
 ```ts
-import { pinBaseline, getBaseline, clearBaseline } from '@vedantb/redline';
+import { pinBaseline, getBaseline, clearBaseline } from '@vedantb/redline/overlay';
 
 await pinBaseline();                  // pin HEAD
 await pinBaseline({ sha: 'abc1234' }); // pin a commit
@@ -151,11 +237,11 @@ await clearBaseline();
 
 These helpers also mirror the baseline to `localStorage` (`redline:baseline`). If the dev server cannot be reached, `getBaseline()` falls back to that copy.
 
-### Per-request override
+#### Per-request override
 
 `GET /__redline/diff?baseline=<sha>` diffs against a given commit without changing the pinned file. `<RedlineOverlay baseline={sha} />` uses this.
 
-## Endpoints
+### Endpoints
 
 `pin` and `clear` only write or delete `.redline/baseline.json`. `build` only writes under `.redline/` and adds git worktrees there. None of the endpoints run `git checkout`, `git restore`, `git reset` or anything else that changes your working tree.
 
@@ -178,7 +264,7 @@ Build endpoints work with Vite and Next.js. On Next.js they need the catch-all A
 
 From the browser, `getLog({ limit })` wraps `/__redline/log`.
 
-## Overlay
+### Overlay
 
 ```tsx
 <RedlineOverlay
@@ -193,7 +279,7 @@ From the browser, `getLog({ limit })` wraps `/__redline/log`.
 
 Outlines do not intercept clicks on your page. Only the small label button on each outline, the toolbar and open panels are clickable. Press Escape to close the diff panel, then the history panel.
 
-### Toolbar
+#### Toolbar
 
 A floating toolbar sits bottom-left by default. It shows how many regions changed and which baseline they are compared with. It has:
 
@@ -203,7 +289,7 @@ A floating toolbar sits bottom-left by default. It shows how many regions change
 
 The position and outline visibility are saved in `localStorage` under `redline:toolbar`. This is separate from `redlineDisabled`: that flag, and the other flags below, remove the whole overlay, toolbar included.
 
-### History builds
+#### History builds
 
 The history panel lists recent commits, newest first, from `GET /__redline/log`. Click a commit to see the app as it was at that commit:
 
@@ -247,7 +333,7 @@ curl -X POST localhost:5173/__redline/build -H 'content-type: application/json' 
 curl localhost:5173/__redline/build  # watch the job move to ready
 ```
 
-#### Next.js History builds
+##### Next.js History builds
 
 The badges, log tail, **Retry** and **Latest** work as for Vite. The iframe loads the same same-origin URL, `/__redline/h/<sha>/`. Redline does not iframe a localhost port.
 
@@ -311,7 +397,7 @@ open http://localhost:3000/__redline/h/$(git rev-parse HEAD~1)/
 
 Or open the app, click **History** in the toolbar, then click a commit. The unit tests cover the Next.js path (`packages/redline/test/standalone.test.ts`). It was also tested by hand on Next 16.3.6 with Turbopack and linked `node_modules`. The E2E suite runs against the Vite demo.
 
-#### History env allowlist
+##### History env allowlist
 
 History is read-only. It must not reach a live backend or hold server secrets. So Redline filters env files as it copies them into the worktree:
 
@@ -321,7 +407,7 @@ History is read-only. It must not reach a live backend or hold server secrets. S
 
 The process environment for `vite build`, `next build` and the standalone server loses the always-stripped keys too. Other variables (`PATH`, `HOME` and so on) stay, because the build tools need them. `@vedantb/redline/vite` and `@vedantb/redline/next` export the rules as `HISTORY_ENV_ALLOWLIST`, `HISTORY_ENV_STRIP_KEYS` and `HISTORY_ENV_STRIP_VALUE`, and the check as `isHistoryEnvKeyAllowed(key, value)`. A custom Vite `envPrefix` is not on the allowlist.
 
-#### History network (read-only)
+##### History network (read-only)
 
 History pages also get a small, generic network layer. It is not tied to Convex or any other backend:
 
@@ -364,7 +450,7 @@ The overlay is off when any of these is true:
 
 Call `refreshRedline()` to make the overlay refetch straight away. It otherwise polls every 2 seconds.
 
-### Mapping rules
+#### Mapping rules
 
 - A changed or added line maps to the innermost tagged element whose source range contains it.
 - A pure deletion maps to the innermost element that contains the lines on both sides of it.
@@ -386,6 +472,7 @@ Use the bar at the top to pin `HEAD`, see the current and pinned SHAs, clear the
 ```sh
 npm test            # Vitest unit tests for the package
 npm run test:e2e    # builds the package, starts the demo dev server, runs Playwright
+npm run test:compare  # builds the package, runs `redline compare` on the example apps
 npm run build       # builds the package and the demo
 ```
 
@@ -407,17 +494,21 @@ The E2E suite tests the package on its own demo. It needs the Vite dev server, b
 - choosing a commit in the history panel builds it, shows it in an iframe without outlines or pinning, and **Latest** returns to the live app with outlines
 - in that iframe the network layer is in `replay` mode: the notes come from `apps/demo/network-fixtures.json`, **Add note** is answered read-only and never reaches the live API (by `fetch` or XHR), and `VITE_CONVEX_URL` was not inlined into the build
 
-The suite is local only. It needs no auth, backend or credentials. The `VITE_CONVEX_URL` it sets on the dev server is a made-up URL (`e2e/env.ts`); nothing connects to it. CI runs the same commands on Node 22 (`.github/workflows/ci.yml`).
+`npm run test:compare` turns each app in `examples/compare/` (Next.js and Vite) into a throwaway two-commit repo under `.e2e/`: `base/`, then `base/` with `head/` copied over and the files in `deleted.txt` removed. It runs the CLI on `HEAD~1..HEAD` and checks every page's status and suspect file in `report.json`: a copy change and a component change show as Changed, a client component that throws as Looks broken, a deleted page as Removed, a new page as New, a sign-in redirect and an unlinked catch-all route as Couldn't check, and the rest as Unchanged. Open `.e2e/<app>/.redline/report/index.html` to see the report.
+
+The suites are local only. It needs no auth, backend or credentials. The `VITE_CONVEX_URL` it sets on the dev server is a made-up URL (`e2e/env.ts`); nothing connects to it. CI runs the same commands on Node 22 (`.github/workflows/ci.yml`).
 
 ## Repo layout
 
 ```
 packages/redline   the npm package
-apps/demo          Vite + React demo that uses Redline on itself
-e2e/               Playwright tests and baseline fixtures
+apps/demo          Vite + React demo that uses the overlay on itself
+e2e/               Playwright tests and baseline fixtures for the overlay
+examples/compare   Next.js and Vite apps (base and head) for the compare end-to-end check
+scripts/           compare-e2e.mjs
 ```
 
-## Limits
+## Overlay limits
 
 - Only JSX host elements are tagged. Elements created with `React.createElement` or rendered by third-party components in `node_modules` are not.
 - History builds need your dependencies to build that commit. In a monorepo where the app imports a workspace package that is built from source (like this repo's demo), linking `node_modules` uses the current build of that package, and a fresh install may fail if the package's build output is not committed.
@@ -428,3 +519,7 @@ e2e/               Playwright tests and baseline fixtures
 - Each Next.js preview is a separate Node process. It uses the memory that `next start` would. Lower `history.maxBuilds` if that is a problem.
 - The toolbar can be moved with a pointer only. There is no keyboard control for its position.
 - The endpoints run `git` commands and builds in the project root. They are meant for local dev servers and must not be exposed publicly.
+
+## Credits
+
+Route detection (the import graph, and the Next.js and Vite route rules) is ported from [pre-post](https://github.com/juangadm/pre-post) under the MIT License. See [`packages/redline/THIRD_PARTY_NOTICES.md`](packages/redline/THIRD_PARTY_NOTICES.md).
