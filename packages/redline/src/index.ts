@@ -1,17 +1,13 @@
-export { RedlineOverlay } from './client/overlay';
-export type { RedlineOverlayProps } from './client/overlay';
-export {
-  pinBaseline,
-  getBaseline,
-  getLog,
-  clearBaseline,
-  refreshRedline,
-  DEFAULT_ENDPOINT,
-  LOCAL_BASELINE_KEY,
-  REFRESH_EVENT,
-} from './client/baseline';
-export type { BaselineInfo, BaselineState, PinInput, EndpointOptions } from './client/baseline';
-export { TOOLBAR_PREFS_KEY } from './client/prefs';
-export type { ToolbarPrefs } from './client/prefs';
-export type { NetworkFixtureEntry, NetworkFixtures, NetworkMode, RedlineNetworkState } from './network/runtime';
-export * from './core';
+export { compare, readConfig, changedBetween, CONFIG_FILE } from './compare/compare';
+export type { CompareOptions, CompareResult, RedlineConfig } from './compare/compare';
+export { discoverRoutes, matchPattern, patternFor, parseSitemap, DEFAULT_MAX_ROUTES } from './routes/discover';
+export type { DiscoverOptions, DiscoverResult, DiscoveredRoute, SkippedRoute, RouteOrigin } from './routes/discover';
+export { affectedRoutes, frameworkForRoot, isDynamicRoute } from './routes/affected';
+export type { AffectedRoute, AffectedRoutesOptions, AffectedRoutesResult, Framework, RouteSource } from './routes/affected';
+export { diffImages } from './compare/pixels';
+export type { Box, PixelDiff, PixelDiffOptions, Region } from './compare/pixels';
+export { classify, STATUS_LABELS } from './compare/classify';
+export type { PageStatus } from './compare/classify';
+export { writeReport, renderIndex, renderPage } from './compare/report';
+export type { CommitRef, PageShot, Report, ReportPage } from './compare/report';
+export type { BrowserOptions, Viewport } from './compare/capture';
