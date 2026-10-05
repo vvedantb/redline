@@ -1,0 +1,8 @@
+* { box-sizing: border-box; }
+body { margin: 0; font-family: Arial, Helvetica, sans-serif; color: #1f2937; }
+nav { display: flex; gap: 20px; padding: 18px 40px; border-bottom: 1px solid #e5e7eb; }
+nav a { color: #1f2937; text-decoration: none; }
+main { padding: 40px; max-width: 880px; }
+h1 { font-size: 36px; margin: 0 0 12px; }
+p { font-size: 17px; line-height: 1.6; color: #4b5563; }
+.card { padding: 18px; border: 1px solid #e5e7eb; border-radius: 10px; margin: 12px 0; }

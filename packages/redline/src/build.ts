@@ -699,6 +699,12 @@ export class BuildManager {
     }
   }
 
+  /** Serve a ready build on localhost. `url` ends in the build's base path. */
+  async preview(sha: string): Promise<{ url: string; close: () => Promise<void> }> {
+    if (this.jobs.get(sha)?.status !== 'ready') throw new Error(`Build ${sha.slice(0, 7)} is not ready`);
+    return this.openPreview(sha, this.paths(sha));
+  }
+
   /** Serve a build on localhost for capture. Vite: a throwaway static server. Next.js: its standalone server. */
   private async openPreview(sha: string, p: BuildPaths): Promise<{ url: string; close: () => Promise<void> }> {
     const basePath = historyBasePath(sha);
@@ -766,7 +772,8 @@ interface ChromiumLike {
   launch(): Promise<BrowserLike>;
 }
 
-async function loadChromium(root: string): Promise<ChromiumLike | null> {
+/** Playwright's `chromium`, resolved from `root`: `playwright`, `@playwright/test` or `playwright-core`. */
+export async function loadChromium(root: string): Promise<ChromiumLike | null> {
   const require = createRequire(path.join(root, 'package.json'));
   for (const name of ['playwright', '@playwright/test', 'playwright-core']) {
     let file: string;
