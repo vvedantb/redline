@@ -1,0 +1,10 @@
+import Layout from '../components/Layout';
+
+export default function Settings() {
+  return (
+    <Layout>
+      <h1>Settings</h1>
+      <div className="card">Email notifications: on</div>
+    </Layout>
+  );
+}
