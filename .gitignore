@@ -10,3 +10,4 @@ blob-report/
 *.log
 .DS_Store
 .e2e/
+e2e/artifacts/

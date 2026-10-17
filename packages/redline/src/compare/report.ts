@@ -2,6 +2,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { Framework, RouteSource } from '../routes/affected';
 import { STATUS_LABELS, type PageStatus } from './classify';
+import type { DiffFile, DiffHunk } from '../types';
+import { DIFF_CSS, DIFF_JS, diffAnchor, renderFileDiff } from './diffview';
+import type { JevAnalysis } from '../jev';
 import type { Region } from './pixels';
 
 export interface CommitRef {
@@ -35,10 +38,41 @@ export interface ReportPage {
   changedRatio: number;
   /** New uncaught errors and console errors at head. */
   errors: string[];
+  /** Jev visual linking, when it ran for this page. */
+  jev?: JevAnalysis;
+}
+
+export interface ReportFileDiff {
+  /** Relative to the app directory. */
+  path: string;
+  oldPath: string | null;
+  status: DiffFile['status'];
+  /** Unified diff of the file, with `---`/`+++` headers. */
+  patch: string;
+  hunks: DiffHunk[];
+}
+
+export interface RouteChange {
+  /** Example URL path when one was captured, else the pattern. */
+  path: string;
+  /** Route pattern, e.g. `/blog/[slug]`. */
+  pattern: string;
+  /** `pages/<pageId>.html` shows the before and after screenshots. */
+  pageId: number | null;
+  /** Changed files that lead to this route, closest first. */
+  files: string[];
+  /** `page`: the page file itself changed. `import`: a file the page imports changed. */
+  kind: 'page' | 'import';
+}
+
+export interface RouteChanges {
+  added: RouteChange[];
+  changed: RouteChange[];
+  removed: RouteChange[];
 }
 
 export interface Report {
-  version: 1;
+  version: 2;
   createdAt: string;
   framework: Framework;
   base: CommitRef;
@@ -49,6 +83,8 @@ export interface Report {
   notices: string[];
   changedFiles: string[];
   deletedFiles: string[];
+  fileDiffs: ReportFileDiff[];
+  routeChanges: RouteChanges;
 }
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
@@ -62,7 +98,7 @@ const COLORS: Record<PageStatus, string> = {
   unchanged: '#9ca3af',
 };
 
-const CSS = `
+const CSS = DIFF_CSS + `
 :root { color-scheme: light; --line: #e5e7eb; --muted: #6b7280; --ink: #111827; --red: #e11d48; }
 * { box-sizing: border-box; }
 body { margin: 0; font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--ink); background: #f9fafb; }
@@ -94,6 +130,12 @@ summary { cursor: pointer; font-weight: 600; margin-bottom: 12px; }
 .shot img { width: 100%; display: block; }
 .box { position: absolute; border: 2px solid var(--red); background: rgba(225,29,72,.06); border-radius: 2px; }
 .box span { position: absolute; top: -11px; left: -11px; width: 20px; height: 20px; border-radius: 50%; background: var(--red); color: #fff; font: 600 11px/20px system-ui; text-align: center; }
+.rc h3 { margin: 12px 0 6px; font-size: 14px; }
+.rc ul { list-style: none; padding: 0; }
+.rc li { margin: 0 0 8px; }
+.rc .files { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 2px; }
+.box.jev { border-color: #7c3aed; background: rgba(124,58,237,.08); display: block; }
+.box.jev span { background: #7c3aed; }
 .empty { padding: 48px; text-align: center; color: var(--muted); line-height: 1.5; }
 .slider { position: relative; max-width: 960px; border: 1px solid var(--line); background: #fff; line-height: 0; }
 .slider img { width: 100%; display: block; }
@@ -133,6 +175,28 @@ function card(p: ReportPage, prefix: string): string {
   return `<a class="card" href="${prefix}pages/${p.id}.html">${thumb}<div class="body">${badge(p.status)}<div class="path">${esc(p.path)}</div><div class="why">${why}</div></div></a>`;
 }
 
+function routeItem(c: RouteChange, diffs: Set<string>): string {
+  const page = c.pageId === null ? '' : ` <a href="pages/${c.pageId}.html">Before and after</a>`;
+  const files = c.files.map((f) => (diffs.has(f) ? `<a href="#${diffAnchor(f)}"><code>${esc(f)}</code></a>` : `<code>${esc(f)}</code>`)).join(' ');
+  return `<li><code>${esc(c.pattern)}</code>${c.path !== c.pattern ? ` <span class="muted">${esc(c.path)}</span>` : ''}${page}<div class="files">${files}</div></li>`;
+}
+
+function routeChangesSection(r: Report): string {
+  const diffs = new Set(r.fileDiffs.map((f) => f.path));
+  const groups = (['added', 'changed', 'removed'] as const)
+    .filter((k) => r.routeChanges[k].length)
+    .map((k) => `<div class="rc"><h3><span class="badge" style="background:${COLORS[k]}">${r.routeChanges[k].length}</span> ${k[0].toUpperCase() + k.slice(1)}</h3><ul>${r.routeChanges[k].map((c) => routeItem(c, diffs)).join('')}</ul></div>`)
+    .join('');
+  return `<section class="panel" id="route-changes"><h2>Route changes</h2>${groups || '<p class="muted">No routes were added, changed or removed.</p>'}</section>`;
+}
+
+function prDiffSection(r: Report): string {
+  if (!r.fileDiffs.length) return '';
+  return `<section id="pr-diff-section"><h2>PR diff <span class="muted">${r.fileDiffs.length} file${r.fileDiffs.length === 1 ? '' : 's'}</span></h2>`
+    + `<div class="toolbar"><button data-diffview="unified" aria-pressed="true">Unified</button><button data-diffview="split" aria-pressed="false">Split</button></div>`
+    + `<div id="pr-diff">${r.fileDiffs.map(renderFileDiff).join('')}</div></section>`;
+}
+
 export function renderIndex(r: Report): string {
   const attention = r.pages.filter((p) => p.status !== 'unchanged');
   const unchanged = r.pages.filter((p) => p.status === 'unchanged');
@@ -147,10 +211,10 @@ export function renderIndex(r: Report): string {
   const rest = unchanged.length
     ? `<details><summary>${unchanged.length} unchanged page${unchanged.length === 1 ? '' : 's'}</summary><div class="grid">${unchanged.map((p) => card(p, '')).join('')}</div></details>`
     : '';
-  return doc('Redline report', `<header><h1>What changed</h1>${commitLine(r)}<div class="chips">${chips}</div></header><main>${notices}${lead}${rest}</main>`);
+  return doc('Redline report', `<header><h1>What changed</h1>${commitLine(r)}<div class="chips">${chips}</div></header><main>${notices}${routeChangesSection(r)}<h2>Pages</h2>${lead}${rest}${prDiffSection(r)}</main>`, r.fileDiffs.length ? DIFF_JS : '');
 }
 
-function sideView(label: string, shot: PageShot | null, regions: Region[], emptyText: string): string {
+function sideView(label: string, shot: PageShot | null, regions: Region[], emptyText: string, jev: JevAnalysis['boxes'] = []): string {
   if (!shot) return `<div class="side"><h3>${label}</h3><div class="shot"><div class="empty">${esc(emptyText)}</div></div></div>`;
   const boxes = regions
     .map((g, i) => {
@@ -158,7 +222,15 @@ function sideView(label: string, shot: PageShot | null, regions: Region[], empty
       return g.y < shot.height ? `<div class="box" style="${style}"><span>${i + 1}</span></div>` : '';
     })
     .join('');
-  return `<div class="side"><h3>${label}</h3><div class="shot"><img src="../${esc(shot.image)}" alt="${label}">${boxes}</div></div>`;
+  const jevBoxes = jev
+    .map((b, i) => {
+      const style = `left:${(b.x / shot.width) * 100}%;top:${(b.y / shot.height) * 100}%;width:${(b.width / shot.width) * 100}%;height:${(b.height / shot.height) * 100}%`;
+      const title = esc(`Jev: ${b.label}${b.file ? ` (${b.file})` : ''}`);
+      const href = b.file ? `../index.html#${diffAnchor(b.file)}` : null;
+      return `<${href ? `a href="${esc(href)}"` : 'div'} class="box jev" style="${style}" title="${title}"><span>J${i + 1}</span></${href ? 'a' : 'div'}>`;
+    })
+    .join('');
+  return `<div class="side"><h3>${label}</h3><div class="shot"><img src="../${esc(shot.image)}" alt="${label}">${boxes}${jevBoxes}</div></div>`;
 }
 
 const SLIDER_JS = `
@@ -179,16 +251,19 @@ export function renderPage(r: Report, p: ReportPage): string {
   const toolbar = both
     ? `<div class="toolbar"><button data-view="sides" aria-pressed="true">Side by side</button><button data-view="slider" aria-pressed="false">Slider</button></div>`
     : '';
-  const sides = `<div class="view sides" id="sides">${sideView('Before', p.before, p.regions, 'This page did not exist before.')}${sideView('After', p.after, p.regions, p.status === 'removed' ? 'This page is gone.' : "Couldn't capture this page.")}</div>`;
+  const sides = `<div class="view sides" id="sides">${sideView('Before', p.before, p.regions, 'This page did not exist before.')}${sideView('After', p.after, p.jev?.boxes.length ? [] : p.regions, p.status === 'removed' ? 'This page is gone.' : "Couldn't capture this page.", p.jev?.boxes)}</div>`;
   const slider = both
     ? `<div class="view" id="slider" hidden><div class="slider"><img src="../${esc(p.before!.image)}" alt="Before"><img class="top" src="../${esc(p.after!.image)}" alt="After" style="clip-path:inset(0 0 0 50%)"><div class="handle" style="left:50%"></div></div><input type="range" min="0" max="100" value="50" aria-label="Before and after"><div class="muted" style="line-height:1.5">Left of the line: before. Right: after.</div></div>`
     : '';
   const suspects = p.suspects.length
     ? `<div class="panel"><h2>Likely from</h2><ul>${p.suspects.map((s) => `<li><code>${esc(s.file)}</code> <span class="muted">${s.depth === 0 ? 'this page' : `${s.depth} import${s.depth === 1 ? '' : 's'} away`}</span></li>`).join('')}</ul></div>`
     : '';
+  const jevPanel = p.jev
+    ? `<div class="panel"><h2>Jev visual linking</h2><ul><li>Visible change: ${Math.round(p.jev.changed * 100)}% likely</li><li>Likely source: ${p.jev.choice ? `<code>${esc(p.jev.choice.file)}</code> (${Math.round(p.jev.choice.confidence * 100)}% confidence)` : 'not identified'}</li><li>${p.jev.boxes.length} highlighted area${p.jev.boxes.length === 1 ? '' : 's'} on the after screenshot (purple)</li></ul></div>`
+    : '';
   const errors = p.errors.length ? `<div class="panel"><h2>Errors after the change</h2><ul>${p.errors.map((e) => `<li><code>${esc(e)}</code></li>`).join('')}</ul></div>` : '';
   const header = `<header><h1><a href="../index.html">&larr;</a> ${esc(p.path)}</h1>${commitLine(r)}<div class="chips">${badge(p.status)}<span class="muted">${esc(p.reason)}</span></div></header>`;
-  return doc(`${p.path} - Redline`, `${header}<main>${toolbar}${sides}${slider}${suspects}${errors}</main>`, both ? SLIDER_JS : '');
+  return doc(`${p.path} - Redline`, `${header}<main>${toolbar}${sides}${slider}${suspects}${jevPanel}${errors}</main>`, both ? SLIDER_JS : '');
 }
 
 /** Write `report.json`, `index.html` and one `pages/<id>.html` per page. Images must already be under `outDir`. */

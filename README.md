@@ -12,7 +12,9 @@ Open the `index.html` path it prints. Redline is a CLI, a Node API and a static 
 
 ## The report
 
-The first page lists every page that needs a look, most important first, each with a thumbnail, a status and the files it most likely came from:
+The first page opens with **Route changes**: routes added, changed or removed by the PR, found from the file-system and router conventions (Next.js App and Pages Router, React Router, TanStack Router, Remix, SvelteKit, `src/pages`) and from the import graph, so a changed shared component lists every route that uses it. Each route links to its before and after page and to the file diffs behind it. The **PR diff** at the bottom shows every changed file, syntax-highlighted, with a Unified or Split toggle.
+
+Below that, the page list shows every page that needs a look, most important first, each with a thumbnail, a status and the files it most likely came from:
 
 | Status | Meaning |
 | --- | --- |
@@ -23,7 +25,7 @@ The first page lists every page that needs a look, most important first, each wi
 | **Couldn't check** | Redline could not capture it: it redirects to sign-in, fails to load, is a dynamic route with no example URL, or is over the page limit. The reason is shown. |
 | **Unchanged** | Folded away at the bottom. |
 
-Click a page for before and after side by side with numbered boxes on the changed areas, a slider view, the suspect files with how many imports away each is, and any new errors. `report.json` holds the same data for tools.
+Click a page for before and after side by side with numbered boxes on the changed areas, a slider view, the suspect files with how many imports away each is, and any new errors. With `TYPESAFE_API_KEY` set, [Jev](https://docs.typesafe.ai) (TypeSafe) also picks the changed file most likely responsible and draws purple boxes on the after screenshot that link to its diff. Results are cached in `.redline/jev-cache`. Without a key the report says Jev was skipped. Jev runs only on pages that pixel diff marked changed, and a Jev error adds a notice without stopping the run. `report.json` holds the same data for tools.
 
 ## How `compare` works
 
@@ -46,7 +48,12 @@ redline compare [base] [head] [options]
   --seed <path>        Extra page to capture, e.g. /blog/hello. Repeatable.
   --viewport <WxH>     Viewport (default: 1280x800)
   --chrome <path>      Chrome or Chromium binary to use
+
+redline snapshot [--root <dir>] [--out <file>]
+redline restore [--root <dir>] [--replace] <file>
 ```
+
+`snapshot` runs `npx convex export --include-file-storage` and saves a zip (default `.redline/convex-snapshot.zip`) with a `.json` sidecar. `restore` runs `npx convex import <file>`. Both use the selected Convex deployment, which must be running. See [docs/convex-local-snapshots.md](docs/convex-local-snapshots.md).
 
 Run it from the app directory (in a monorepo, the package with the Next or Vite config). It exits with 1 on errors such as a failed build, and 0 otherwise, whatever the report says.
 
@@ -473,6 +480,7 @@ Use the bar at the top to pin `HEAD`, see the current and pinned SHAs, clear the
 npm test            # Vitest unit tests for the package
 npm run test:e2e    # builds the package, starts the demo dev server, runs Playwright
 npm run test:compare  # builds the package, runs `redline compare` on the example apps
+npm run test:pr-diff  # runs `redline compare` on e2e/fixtures/pr-diff and screenshots the report
 npm run build       # builds the package and the demo
 ```
 
@@ -505,7 +513,8 @@ packages/redline   the npm package
 apps/demo          Vite + React demo that uses the overlay on itself
 e2e/               Playwright tests and baseline fixtures for the overlay
 examples/compare   Next.js and Vite apps (base and head) for the compare end-to-end check
-scripts/           compare-e2e.mjs
+scripts/           compare-e2e.mjs, pr-diff-e2e.mjs
+docs/              Convex local snapshots
 ```
 
 ## Overlay limits
