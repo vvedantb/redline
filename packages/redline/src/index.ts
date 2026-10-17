@@ -1,4 +1,4 @@
-export { compare, readConfig, changedBetween, CONFIG_FILE } from './compare/compare';
+export { compare, diffBetween, readConfig, changedBetween, CONFIG_FILE } from './compare/compare';
 export type { CompareOptions, CompareResult, RedlineConfig } from './compare/compare';
 export { discoverRoutes, matchPattern, patternFor, parseSitemap, DEFAULT_MAX_ROUTES } from './routes/discover';
 export type { DiscoverOptions, DiscoverResult, DiscoveredRoute, SkippedRoute, RouteOrigin } from './routes/discover';
@@ -9,5 +9,10 @@ export type { Box, PixelDiff, PixelDiffOptions, Region } from './compare/pixels'
 export { classify, STATUS_LABELS } from './compare/classify';
 export type { PageStatus } from './compare/classify';
 export { writeReport, renderIndex, renderPage } from './compare/report';
-export type { CommitRef, PageShot, Report, ReportPage } from './compare/report';
+export type { CommitRef, PageShot, Report, ReportFileDiff, ReportPage, RouteChange, RouteChanges } from './compare/report';
+export { buildRouteChanges } from './compare/routechanges';
+export { analyzeRoutePair, createJevClient, prepareImage, JEV_MODEL } from './jev';
+export type { AnalyzeOptions, JevAnalysis, JevBox, JevCandidate, JevClient, JevClientOptions } from './jev';
+export { snapshot, restore } from './convex';
+export type { RestoreOptions, SnapshotOptions } from './convex';
 export type { BrowserOptions, Viewport } from './compare/capture';

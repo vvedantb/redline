@@ -166,7 +166,7 @@ describe('report', () => {
     { id: 2, path: '/about', pattern: '/about', status: 'unchanged', reason: 'No visible change', suspects: [], before: null, after: null, regions: [], changedRatio: 0, errors: ['<b>bad</b>'] },
   ];
   const report: Report = {
-    version: 1,
+    version: 2,
     createdAt: '2026-01-01T00:00:00.000Z',
     framework: 'nextjs-app',
     base: { ref: 'HEAD~1', sha: 'a'.repeat(40), subject: 'Before' },
@@ -176,6 +176,8 @@ describe('report', () => {
     notices: ['1 page(s) were not captured'],
     changedFiles: ['components/Button.jsx'],
     deletedFiles: [],
+    fileDiffs: [],
+    routeChanges: { added: [], changed: [], removed: [] },
   };
 
   it('lists pages that need attention and folds unchanged ones away', () => {

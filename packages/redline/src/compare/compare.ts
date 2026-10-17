@@ -2,6 +2,8 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { BuildManager } from '../build';
+import { parseUnifiedDiff } from '../diff';
+import { analyzeRoutePair, createJevClient, JEV_SKIPPED_NOTICE, mockJevFetch, type JevAnalysis, type JevCandidate, type JevClient } from '../jev';
 import { resolveCommit } from '../server';
 import { affectedRoutes, type AffectedRoute, type AffectedRoutesResult, type Framework } from '../routes/affected';
 import { capRoutes, DEFAULT_MAX_ROUTES, discoverRoutes, patternFor, type DiscoveredRoute, type RouteOrigin } from '../routes/discover';
@@ -9,7 +11,8 @@ import type { BuildFramework } from '../types';
 import { capturePage, DEFAULT_VIEWPORT, launchBrowser, stableContext, type BrowserOptions, type PageCapture, type Viewport } from './capture';
 import { classify, rankPages, type PageStatus } from './classify';
 import { diffImages, type Region } from './pixels';
-import { writeReport, type CommitRef, type PageShot, type Report, type ReportPage } from './report';
+import { buildRouteChanges } from './routechanges';
+import { writeReport, type CommitRef, type PageShot, type Report, type ReportFileDiff, type ReportPage } from './report';
 
 export interface CompareOptions {
   /** App directory (where `package.json` and the Next or Vite config live). Default `process.cwd()`. */
@@ -28,6 +31,8 @@ export interface CompareOptions {
   browser?: BrowserOptions;
   /** Changed areas smaller than this many square pixels are ignored. Default 100. */
   minArea?: number;
+  /** Jev client for visual linking. Default: built from `TYPESAFE_API_KEY`, or the offline mock when `REDLINE_JEV_MOCK=1`. */
+  jev?: JevClient;
   /** Progress messages. */
   log?: (message: string) => void;
 }
@@ -97,6 +102,33 @@ export function changedBetween(top: string, rel: string, base: string, head: str
   return { changed, deleted };
 }
 
+/** Parsed `git diff` between two commits for files under `rel`, with paths relative to `rel`. */
+export function diffBetween(top: string, rel: string, base: string, head: string): ReportFileDiff[] {
+  const text = git(top, ['diff', '--no-renames', '--no-color', '--no-ext-diff', base, head, '--', rel || '.']);
+  const prefix = rel ? rel.split(path.sep).join('/') + '/' : '';
+  const local = (p: string) => (prefix && p.startsWith(prefix) ? p.slice(prefix.length) : p);
+  return parseUnifiedDiff(text).map((f) => {
+    const oldPath = f.oldPath ? local(f.oldPath) : null;
+    const newPath = local(f.path);
+    const header = `--- ${f.status === 'added' ? '/dev/null' : `a/${oldPath ?? newPath}`}\n+++ ${f.status === 'deleted' ? '/dev/null' : `b/${newPath}`}`;
+    return { path: newPath, oldPath, status: f.status, patch: [header, ...f.hunks.map((h) => h.patch)].join('\n') + '\n', hunks: f.hunks };
+  });
+}
+
+function jevClient(options: CompareOptions): JevClient | null {
+  if (options.jev) return options.jev;
+  if (process.env.REDLINE_JEV_MOCK === '1') return createJevClient({ apiKey: 'mock', fetch: mockJevFetch });
+  const apiKey = process.env.TYPESAFE_API_KEY;
+  return apiKey ? createJevClient({ apiKey }) : null;
+}
+
+function jevCandidates(suspects: AffectedRoute['sources'], diffs: ReportFileDiff[]): JevCandidate[] {
+  return suspects
+    .filter((s) => diffs.some((d) => d.path === s.file))
+    .slice(0, 8)
+    .map((s) => ({ file: s.file, description: s.depth === 0 ? 'The page file itself' : `Imported ${s.depth} step${s.depth === 1 ? '' : 's'} away from the page` }));
+}
+
 function buildFramework(framework: Framework): BuildFramework {
   if (framework === 'nextjs-app' || framework === 'nextjs-pages') return 'next';
   if (framework === 'vite') return 'vite';
@@ -149,6 +181,7 @@ export async function compare(options: CompareOptions = {}): Promise<CompareResu
   const framework = affectedRoutes({ root: headTree, changedFiles: [] }).framework;
   const { changed, deleted } = changedBetween(top, rel, baseSha, headSha);
   const affected = affectedRoutes({ root: headTree, baseRoot: baseTree, changedFiles: changed, deletedFiles: deleted, framework });
+  const fileDiffs = diffBetween(top, rel, baseSha, headSha);
   log(`${changed.length + deleted.length} changed file(s); framework ${framework}`);
 
   const builds = new BuildManager({ root, framework: buildFramework(framework), capture: false, maxReady: 10 });
@@ -196,6 +229,9 @@ export async function compare(options: CompareOptions = {}): Promise<CompareResu
     log(`Capturing ${routes.length} page(s) at both commits...`);
 
     clearOut(outDir);
+    const jev = jevClient(options);
+    const notices: string[] = [];
+    if (!jev) notices.push(JEV_SKIPPED_NOTICE);
     const images = path.join(outDir, 'images');
     const pages: Omit<ReportPage, 'id'>[] = [];
     for (const [i, route] of routes.entries()) {
@@ -213,12 +249,22 @@ export async function compare(options: CompareOptions = {}): Promise<CompareResu
       }
       const { status, reason } = classify({ before: b, after: a, regions, inBase, inHead });
       const keepRegions = status === 'changed' || status === 'broken';
+      const suspects = suspectsFor(route.pattern, affected);
+      let analysis: JevAnalysis | undefined;
+      if (jev && keepRegions && regions.length && b.image && a.image) {
+        try {
+          analysis = await analyzeRoutePair({ client: jev, before: fs.readFileSync(b.image), after: fs.readFileSync(a.image), route: route.path, candidates: jevCandidates(suspects, fileDiffs), cacheDir: path.join(root, '.redline', 'jev-cache') });
+        } catch (err) {
+          notices.push(`Jev visual linking failed for ${route.path}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
       pages.push({
         path: route.path,
         pattern: route.pattern,
         status,
         reason,
-        suspects: suspectsFor(route.pattern, affected),
+        suspects,
+        jev: analysis,
         before: status === 'added' ? null : shot(b, outDir),
         after: status === 'removed' ? null : shot(a, outDir),
         regions: keepRegions ? regions : [],
@@ -233,14 +279,13 @@ export async function compare(options: CompareOptions = {}): Promise<CompareResu
 
     const ranked = rankPages(pages).map((p, id) => ({ id, ...p }));
     const summary = Object.fromEntries((['broken', 'changed', 'added', 'removed', 'skipped', 'unchanged'] as PageStatus[]).map((s) => [s, ranked.filter((p) => p.status === s).length])) as Report['summary'];
-    const notices: string[] = [];
     const overCap = skipped.filter((s) => s.reason.startsWith('over')).length;
     if (overCap) notices.push(`${overCap} page(s) were not captured because of the ${maxRoutes}-page limit. Raise it with --max-routes.`);
     if (affected.limits.filesCapped) notices.push(`Only the first ${affected.limits.fileCap} source files were scanned, so "Likely from" may miss some files.`);
     if (affected.limits.depthCapped) notices.push(`Imports more than ${affected.limits.depthCap} files deep were not followed, so "Likely from" may miss some pages.`);
 
     const report: Report = {
-      version: 1,
+      version: 2,
       createdAt: new Date().toISOString(),
       framework,
       base,
@@ -250,6 +295,8 @@ export async function compare(options: CompareOptions = {}): Promise<CompareResu
       notices,
       changedFiles: changed,
       deletedFiles: deleted,
+      fileDiffs,
+      routeChanges: buildRouteChanges({ before: before.patterns, after: after.patterns, affected, pages: ranked }),
     };
     const reportFile = writeReport(report, outDir);
     return { report, outDir, reportFile };

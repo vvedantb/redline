@@ -21,6 +21,11 @@ jobs:
       - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e
       - run: npm run test:compare
+      - run: npm run test:pr-diff
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pr-diff-report
+          path: e2e/artifacts/
       - run: npm run build
       - uses: actions/upload-artifact@v4
         if: failure()

@@ -11,6 +11,10 @@ npx redline compare main HEAD --seed /blog/hello
 
 The report lists pages as **Looks broken**, **Changed**, **New**, **Removed**, **Couldn't check** or **Unchanged**, ranked, with thumbnails and suspect files. Each page has before and after side by side with numbered boxes on the changed areas, and a slider. `report.json` has the same data.
 
+The report also has a **Route changes** section (routes added, removed or touched by the diff) and the full PR diff, in unified or split view, with syntax highlighting.
+
+**Jev visual linking (optional).** Set `TYPESAFE_API_KEY` to link each changed area to the files that likely caused it. If the key is unset, the report shows a skip notice and the rest is unchanged. Results are cached in `.redline/jev-cache`.
+
 ```ts
 import { compare, discoverRoutes, affectedRoutes } from '@vvedantb/redline';
 
@@ -20,6 +24,10 @@ const { routes: hit, removed } = affectedRoutes({ root: 'apps/web', changedFiles
 ```
 
 Pages are found from file-system routes, a link crawl from `/`, `sitemap.xml`, and seeds in `redline.config.json` or `--seed`. Both commits are built in git worktrees and cached under `.redline/`; your working tree is never touched.
+
+## Convex snapshots
+
+`redline snapshot` and `redline restore <file>` wrap `convex export` and `convex import`, so you can save and reload local Convex data (with file storage). The backend must be running. Use `--out <file>` to choose the zip and `--replace` to replace existing data on restore. See the GitHub repo docs/convex-local-snapshots.md (not included in the npm package).
 
 ## In-app overlay (optional)
 
