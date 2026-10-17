@@ -19,28 +19,51 @@ import { hasDependency } from './pkg';
 
 const PAGE_EXTS = ['.tsx', '.jsx', '.ts', '.js', '.vue', '.svelte'];
 
+/**
+ * File path under a routes folder → route pattern. Follows TanStack Router and
+ * Remix flat-route naming: dots nest, `$id` is a param, `_layout` and `(group)`
+ * segments add no URL part, a trailing `_` un-nests, and `index`, `route` and
+ * `.lazy` name the folder's own page.
+ */
 function fileToRoute(rel: string): string {
-  let p = toPosix(rel).replace(/\.[^.]+$/, '');
-  p = p.replace(/(^|\/)index$/, '');
-  p = p.replace(/(^|\/)_index$/, '');
-  p = p.replace(/\$([\w]+)/g, '[$1]');         // TanStack $param
-  p = p.replace(/(^|\/)__root$/, '');
-  p = p.replace(/\.(?=[^/])/g, '/');            // TanStack dotted nesting: posts.$id → posts/[id]
-  p = p.replace(/\/+$/, '');
-  return '/' + p.replace(/^\/+/, '');
+  const segments = toPosix(rel).replace(/\.[^.]+$/, '').replace(/\.lazy$/, '').split(/[/.]/);
+  if (segments[segments.length - 1] === 'route') segments.pop();
+  const kept = segments
+    .filter(seg => seg && seg !== 'index' && !seg.startsWith('_') && !/^\(.*\)$/.test(seg))
+    .map(seg => seg.replace(/_$/, '').replace(/\$(\w+)/g, '[$1]'));
+  return '/' + kept.join('/');
+}
+
+/** A TanStack Router route module. */
+const FILE_ROUTE = /\bcreate(?:Lazy)?FileRoute\s*\(/;
+
+function readOr(file: string): string {
+  try {
+    return fs.readFileSync(file, 'utf-8');
+  } catch {
+    return '';
+  }
 }
 
 function collectFileRoutes(dir: string, files: Iterable<string>, entries: Map<string, string>): void {
   const prefix = dir + path.sep;
+  const candidates: string[] = [];
   for (const file of files) {
     if (!file.startsWith(prefix)) continue;
     if (!PAGE_EXTS.includes(path.extname(file))) continue;
     const base = path.basename(file);
     if (base.startsWith('_') && !/^_index\./.test(base)) continue; // layouts / private
     if (/\.(test|spec|stories)\./.test(base)) continue;
-    const rel = path.relative(dir, file);
-    if (/(^|\/)(components?|hooks|utils|lib)\//.test(rel)) continue;
-    if (!entries.has(file)) entries.set(file, fileToRoute(rel));
+    const rel = toPosix(path.relative(dir, file));
+    if (/(^|\/)-/.test(rel)) continue; // TanStack ignores `-` prefixed files and folders
+    if (/(^|\/)[-_]?(components?|hooks|utils|lib)\//.test(rel)) continue;
+    candidates.push(file);
+  }
+  // In a TanStack app, only modules that create a file route are pages; the
+  // rest are helpers co-located with them (excluded by routeFileIgnorePattern).
+  const routeModules = candidates.filter(file => FILE_ROUTE.test(readOr(file)));
+  for (const file of routeModules.length ? routeModules : candidates) {
+    if (!entries.has(file)) entries.set(file, fileToRoute(path.relative(dir, file)));
   }
 }
 

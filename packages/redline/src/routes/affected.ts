@@ -23,16 +23,17 @@ interface FrameworkAdapter {
 }
 
 /**
- * Build tooling every stylesheet passes through. A change here restyles the
- * whole app, which no import edge records, so it wraps every entry.
+ * Build config every page passes through: stylesheet tooling, and the bundler
+ * config (env, aliases, plugins). A change here can alter the whole app, which
+ * no import edge records, so it wraps every entry.
  */
-const STYLE_TOOLING = /^(tailwind|postcss)\.config\.(ts|js|mjs|cjs|mts|cts)$/;
+const APP_WIDE_CONFIG = /^(tailwind|postcss|next|vite)\.config\.(ts|js|mjs|cjs|mts|cts)$/;
 
-function styleTooling(appRoot: string, files: string[], entries: Map<string, string>): Map<string, string[]> {
+function appWideConfig(appRoot: string, files: string[], entries: Map<string, string>): Map<string, string[]> {
   const out = new Map<string, string[]>();
   const all = [...entries.keys()];
   for (const file of files) {
-    if (path.dirname(file) === appRoot && STYLE_TOOLING.test(path.basename(file))) out.set(file, all);
+    if (path.dirname(file) === appRoot && APP_WIDE_CONFIG.test(path.basename(file))) out.set(file, all);
   }
   return out;
 }
@@ -42,7 +43,7 @@ function styleTooling(appRoot: string, files: string[], entries: Map<string, str
  * folder and below; a Pages Router `_app`/`_document` wraps every page.
  */
 function nextContainers(appRoot: string, files: string[], entries: Map<string, string>, dirName: 'app' | 'pages'): Map<string, string[]> {
-  const out = styleTooling(appRoot, files, entries);
+  const out = appWideConfig(appRoot, files, entries);
   const routerDir = path.join(routerBase(appRoot, dirName), dirName);
   const wrapper = dirName === 'app' ? /^(layout|template)\.(tsx|ts|jsx|js|mdx)$/ : /^_(app|document)\.(tsx|ts|jsx|js)$/;
   const pages = [...entries.keys()];
@@ -138,7 +139,7 @@ const FRAMEWORKS: FrameworkAdapter[] = [
     normalize: rel => rel,
     directRoutes: detectGenericRoutes,
     routeEntries: viteRouteEntries,
-    containers: styleTooling,
+    containers: appWideConfig,
   },
   {
     name: 'generic',

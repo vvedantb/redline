@@ -50,3 +50,36 @@ describe('TanStack file routes', () => {
     expect(rc.changed[2]).toMatchObject({ path: '/posts/1', pageId: 1 });
   });
 });
+
+describe('TanStack route modules next to helpers', () => {
+  let app: string;
+  const route = (id: string) => `import { createFileRoute } from '@tanstack/react-router';\nexport const Route = createFileRoute('${id}')({});`;
+  const write = (rel: string, content: string) => {
+    const file = path.join(app, rel);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, content);
+  };
+
+  beforeAll(() => {
+    app = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'redline-tanstack-helpers-')));
+    write('package.json', JSON.stringify({ devDependencies: { vite: '^6' } }));
+    write('src/routes/__root.tsx', 'export const Route = createRootRoute({});');
+    write('src/routes/index.tsx', route('/'));
+    write('src/routes/_app.tsx', route('/_app'));
+    write('src/routes/_app/settings.tsx', route('/_app/settings'));
+    write('src/routes/_app/projects/$id/route.tsx', route('/_app/projects/$id'));
+    write('src/routes/_app/projects/$id/index.lazy.tsx', "export const Route = createLazyFileRoute('/_app/projects/$id/')({});");
+    write('src/routes/_app/projects/ProjectPanel.tsx', 'export const ProjectPanel = () => null;');
+    write('src/routes/(marketing)/pricing.tsx', route('/pricing'));
+    write('src/routes/posts_.$id.edit.tsx', route('/posts_/$id/edit'));
+    write('src/routes/_components/Hero.tsx', 'export const Hero = () => null;');
+    write('src/routes/-helpers/format.ts', 'export const format = () => "";');
+  });
+
+  afterAll(() => fs.rmSync(app, { recursive: true, force: true }));
+
+  it('lists only route modules, with layout and group segments removed', () => {
+    const { known } = affectedRoutes({ root: app, changedFiles: [] });
+    expect(known.sort()).toEqual(['/', '/posts/[id]/edit', '/pricing', '/projects/[id]', '/settings']);
+  });
+});

@@ -24,6 +24,9 @@ export interface ClassifyInput {
   inHead: boolean;
 }
 
+/** Both sides blank: nothing to compare, so the page is not "unchanged". */
+export const BLANK_BOTH = 'Blank before and after. The app may need env keys or data the build does not have';
+
 const SIGN_IN = /(^|\/)(log-?in|sign-?in|auth|sso)(\/|$)/i;
 
 function usable(page?: PageCapture): page is PageCapture {
@@ -44,6 +47,9 @@ export function classify({ before, after, regions, inBase, inHead }: ClassifyInp
   if (after.appError && !before?.appError) return { status: 'broken', reason: 'The page shows an error screen' };
   if (newErrors.length) return { status: 'broken', reason: `New error: ${newErrors[0]}` };
   if (usable(before) && before.content > 0 && after.content === 0 && !after.notFound) return { status: 'broken', reason: 'The page is now blank' };
+  if (usable(before) && before.content === 0 && after.content === 0 && !after.notFound) {
+    return { status: 'skipped', reason: BLANK_BOTH };
+  }
 
   if (!usable(before)) {
     if (!after.notFound) return { status: 'added', reason: inBase ? 'The page loads now and did not before' : 'New page' };

@@ -22,6 +22,7 @@ function site(root: string): void {
   put(root, 'package.json', JSON.stringify({ dependencies: { next: '16' } }));
   put(root, 'tsconfig.json', JSON.stringify({ compilerOptions: { baseUrl: '.', paths: { '@/*': ['./*'] } } }));
   put(root, 'tailwind.config.ts', 'export default {};');
+  put(root, 'next.config.mjs', 'export default {};');
   put(root, 'app/globals.css', 'body { font-size: 14px; }');
   put(root, 'app/layout.tsx', "import './globals.css';\nimport { Nav } from '@/components/Nav';\nexport default ({ children }) => <><Nav/>{children}</>;");
   put(root, 'components/Nav.tsx', 'export const Nav = () => <nav/>;');
@@ -80,6 +81,12 @@ describe('affectedRoutes', () => {
 
   it('treats style tooling config as affecting every page', () => {
     expect(routesOf(['tailwind.config.ts']).routes).toHaveLength(STATIC.length + 1);
+  });
+
+  it('treats the bundler config as affecting every page', () => {
+    const result = routesOf(['next.config.mjs']);
+    expect(result.routes).toHaveLength(STATIC.length + 1);
+    expect(result.unplaced).toEqual([]);
   });
 
   it('collects every changed file that reaches a route, closest first', () => {

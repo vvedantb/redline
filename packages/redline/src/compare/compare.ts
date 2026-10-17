@@ -9,7 +9,7 @@ import { affectedRoutes, type AffectedRoute, type AffectedRoutesResult, type Fra
 import { capRoutes, DEFAULT_MAX_ROUTES, discoverRoutes, patternFor, type DiscoveredRoute, type RouteOrigin } from '../routes/discover';
 import type { BuildFramework } from '../types';
 import { capturePage, DEFAULT_VIEWPORT, launchBrowser, stableContext, type BrowserOptions, type PageCapture, type Viewport } from './capture';
-import { classify, rankPages, type PageStatus } from './classify';
+import { BLANK_BOTH, classify, rankPages, type PageStatus } from './classify';
 import { diffImages, type Region } from './pixels';
 import { buildRouteChanges } from './routechanges';
 import { writeReport, type CommitRef, type PageShot, type Report, type ReportFileDiff, type ReportPage } from './report';
@@ -281,6 +281,9 @@ export async function compare(options: CompareOptions = {}): Promise<CompareResu
     const summary = Object.fromEntries((['broken', 'changed', 'added', 'removed', 'skipped', 'unchanged'] as PageStatus[]).map((s) => [s, ranked.filter((p) => p.status === s).length])) as Report['summary'];
     const overCap = skipped.filter((s) => s.reason.startsWith('over')).length;
     if (overCap) notices.push(`${overCap} page(s) were not captured because of the ${maxRoutes}-page limit. Raise it with --max-routes.`);
+    if (routes.length && pages.filter((p) => p.reason === BLANK_BOTH).length === routes.length) {
+      notices.push('Every page was blank at both commits. Builds run without secret and Convex env keys, so an app that needs them to start renders nothing.');
+    }
     if (affected.limits.filesCapped) notices.push(`Only the first ${affected.limits.fileCap} source files were scanned, so "Likely from" may miss some files.`);
     if (affected.limits.depthCapped) notices.push(`Imports more than ${affected.limits.depthCap} files deep were not followed, so "Likely from" may miss some pages.`);
 
