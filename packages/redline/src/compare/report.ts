@@ -251,7 +251,7 @@ export function renderPage(r: Report, p: ReportPage): string {
   const toolbar = both
     ? `<div class="toolbar"><button data-view="sides" aria-pressed="true">Side by side</button><button data-view="slider" aria-pressed="false">Slider</button></div>`
     : '';
-  const sides = `<div class="view sides" id="sides">${sideView('Before', p.before, p.regions, 'This page did not exist before.')}${sideView('After', p.after, p.regions, p.status === 'removed' ? 'This page is gone.' : "Couldn't capture this page.", p.jev?.boxes)}</div>`;
+  const sides = `<div class="view sides" id="sides">${sideView('Before', p.before, p.regions, 'This page did not exist before.')}${sideView('After', p.after, p.jev?.boxes.length ? [] : p.regions, p.status === 'removed' ? 'This page is gone.' : "Couldn't capture this page.", p.jev?.boxes)}</div>`;
   const slider = both
     ? `<div class="view" id="slider" hidden><div class="slider"><img src="../${esc(p.before!.image)}" alt="Before"><img class="top" src="../${esc(p.after!.image)}" alt="After" style="clip-path:inset(0 0 0 50%)"><div class="handle" style="left:50%"></div></div><input type="range" min="0" max="100" value="50" aria-label="Before and after"><div class="muted" style="line-height:1.5">Left of the line: before. Right: after.</div></div>`
     : '';

@@ -5,13 +5,13 @@ Redline wraps the Convex CLI so a local Convex deployment can be saved and resto
 
 ```
 redline snapshot [--root <dir>] [--out <file>]
-redline restore  [--root <dir>] [--replace] <file>
+redline restore  [--root <dir>] [--replace] [--yes] <file>
 ```
 
 `snapshot` runs `npx convex export --include-file-storage --path <file>` in `--root` (default:
 current directory) and writes the zip to `.redline/convex-snapshot.zip`. It also writes
 `.redline/convex-snapshot.json` with the time, the command and a pointer to this page.
-`restore` runs `npx convex import [--replace] <file>`. Both commands act on the deployment the
+`restore` runs `npx convex import [--replace] [--yes] <file>`. Both commands act on the deployment the
 Convex CLI has selected. Neither copies database files.
 
 ## Sources

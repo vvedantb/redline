@@ -57,7 +57,7 @@ describe('analyzeRoutePair', () => {
   it('splits into call A (both images) and call B (after only), and maps boxes to pixels', async () => {
     const { fn, calls } = fakeFetch();
     const client = createJevClient({ apiKey: 'k', fetch: fn });
-    const result = await analyzeRoutePair({ client, before: png(1280, 3136), after: png(1280, 3136, 200), route: '/', candidates });
+    const result = await analyzeRoutePair({ client, before: png(1280, 3136), after: png(1280, 3136, 200), route: '/', candidates, regions: [] });
 
     expect(calls).toHaveLength(2);
     expect(calls[0].url).toBe('https://api.typesafe.ai/v1/systemone');
@@ -104,7 +104,7 @@ describe('analyzeRoutePair', () => {
   it('keeps small 1280x800 images within 768 px', async () => {
     const { fn, calls } = fakeFetch();
     const client = createJevClient({ apiKey: 'k', fetch: fn });
-    await analyzeRoutePair({ client, before: png(1280, 800), after: png(1280, 800, 9), route: '/', candidates });
+    await analyzeRoutePair({ client, before: png(1280, 800), after: png(1280, 800, 9), route: '/', candidates, regions: [] });
     for (const c of calls) {
       for (const asset of Object.values(JSON.parse(String(c.init.body)).assets) as any[]) {
         const [w, h] = sentSide(asset);
@@ -120,7 +120,7 @@ describe('analyzeRoutePair', () => {
       calls.push(1);
       return new Response(JSON.stringify({ answers: { changed: { noul: 0.1 }, culprit: { choice: 'unknown', confidence: 1 } } }), { status: 200 });
     }) as unknown as typeof fetch;
-    const result = await analyzeRoutePair({ client: createJevClient({ apiKey: 'k', fetch: fn }), before: png(300, 300), after: png(300, 300), route: '/', candidates });
+    const result = await analyzeRoutePair({ client: createJevClient({ apiKey: 'k', fetch: fn }), before: png(300, 300), after: png(300, 300), route: '/', candidates, regions: [] });
     expect(calls).toHaveLength(1);
     expect(result.boxes).toEqual([]);
   });
@@ -136,7 +136,7 @@ describe('analyzeRoutePair', () => {
       return ok(url as any, init);
     }) as unknown as typeof fetch;
     const client = createJevClient({ apiKey: 'k', fetch: fn });
-    const result = await analyzeRoutePair({ client, before: png(1280, 3136), after: png(1280, 3136, 200), route: '/', candidates });
+    const result = await analyzeRoutePair({ client, before: png(1280, 3136), after: png(1280, 3136, 200), route: '/', candidates, regions: [] });
     expect(calls).toHaveLength(3);
     const longest = (i: number) => Math.max(...sentSide(Object.values(JSON.parse(String(calls[i].init.body)).assets)[0] as any));
     expect(longest(0)).toBe(768);
@@ -149,7 +149,7 @@ describe('analyzeRoutePair', () => {
   it('serves a repeat call from the cache without calling fetch', async () => {
     const { fn, calls } = fakeFetch();
     const client = createJevClient({ apiKey: 'k', fetch: fn });
-    const args = { client, before: png(400, 400), after: png(400, 400, 100), route: '/a', candidates, cacheDir: path.join(tmp, 'jev-cache') };
+    const args = { client, before: png(400, 400), after: png(400, 400, 100), route: '/a', candidates, regions: [], cacheDir: path.join(tmp, 'jev-cache') };
     const first = await analyzeRoutePair(args);
     const second = await analyzeRoutePair(args);
     const firstCalls = calls.length;
@@ -162,9 +162,87 @@ describe('analyzeRoutePair', () => {
     expect(calls.length).toBeGreaterThan(firstCalls);
   });
 
+  describe('pixel regions', () => {
+    const regions = [
+      { x: 100, y: 200, width: 120, height: 60, pixels: 900 },
+      { x: 600, y: 1500, width: 200, height: 100, pixels: 2000 },
+    ];
+    const cropAnswers = {
+      changed: { noul: 0.9 },
+      culprit: { choice: 'src/Button.tsx', confidence: 0.8 },
+      // Crops are ordered by pixels, so r0 is the larger region.
+      r0_meaningful: { noul: 0.9 },
+      r0_culprit: { choice: 'src/Button.tsx' },
+      r1_meaningful: { noul: 0.6 },
+      r1_culprit: { choice: 'unknown' },
+    };
+    const reply = () => {
+      const calls: any[] = [];
+      const fn = (async (_u: string, init: RequestInit) => {
+        const body = JSON.parse(String(init.body));
+        calls.push(body);
+        const subset = Object.fromEntries(Object.entries(cropAnswers).filter(([k]) => k in body.questions));
+        return new Response(JSON.stringify({ answers: subset }), { status: 200 });
+      }) as unknown as typeof fetch;
+      return { fn, calls };
+    };
+
+    it('asks about crops, not boxes, and returns the pixel rectangles', async () => {
+      const { fn, calls } = reply();
+      const client = createJevClient({ apiKey: 'k', fetch: fn });
+      const result = await analyzeRoutePair({ client, before: png(1280, 3136), after: png(1280, 3136, 200), route: '/', candidates, regions });
+      expect(calls).toHaveLength(2);
+      const crop = calls[1];
+      expect(Object.values(crop.questions).some((q: any) => q.type === 'box')).toBe(false);
+      expect(crop.state.before).toBeUndefined();
+      expect(Object.keys(crop.assets)).toEqual([crop.state.r0, crop.state.r1]);
+      for (const a of Object.values(crop.assets) as any[]) {
+        const [w, h] = sentSide(a);
+        expect(Math.max(w, h)).toBeLessThanOrEqual(768);
+        expect(Math.min(w, h)).toBeGreaterThanOrEqual(280);
+      }
+      for (const id of Object.keys(crop.assets)) expect(JSON.stringify(crop.questions)).not.toContain(id);
+      // Ranked by meaningful noul: r0 (0.9) before r1 (0.6). r1 falls back to the page-level file.
+      expect(result.boxes.map(({ x, y, width, height }) => ({ x, y, width, height }))).toEqual([regions[1], regions[0]].map(({ x, y, width, height }) => ({ x, y, width, height })));
+      expect(result.boxes.map((b) => b.file)).toEqual(['src/Button.tsx', 'src/Button.tsx']);
+    });
+
+    it('drops regions Jev calls noise', async () => {
+      const calls: any[] = [];
+      const fn = (async (_u: string, init: RequestInit) => {
+        const body = JSON.parse(String(init.body));
+        calls.push(body);
+        return new Response(JSON.stringify({ answers: 'r0_meaningful' in body.questions ? { r0_meaningful: { noul: 0.1 }, r1_meaningful: { noul: 0.7 } } : cropAnswers }), { status: 200 });
+      }) as unknown as typeof fetch;
+      const client = createJevClient({ apiKey: 'k', fetch: fn });
+      const result = await analyzeRoutePair({ client, before: png(1280, 3136), after: png(1280, 3136, 200), route: '/', candidates, regions });
+      expect(result.boxes).toHaveLength(1);
+      expect(result.boxes[0]).toMatchObject({ x: 100, y: 200 });
+    });
+
+    it('falls back to box questions when one region covers the page', async () => {
+      const { fn, calls } = fakeFetch();
+      const client = createJevClient({ apiKey: 'k', fetch: fn });
+      await analyzeRoutePair({ client, before: png(400, 400), after: png(400, 400, 9), route: '/', candidates, regions: [{ x: 0, y: 0, width: 400, height: 400, pixels: 160000 }] });
+      expect(JSON.parse(String(calls[1].init.body)).questions.largest_box.type).toBe('box');
+    });
+
+    it('keys the cache on region geometry', async () => {
+      const { fn, calls } = reply();
+      const client = createJevClient({ apiKey: 'k', fetch: fn });
+      const args = { client, before: png(400, 400), after: png(400, 400, 100), route: '/r', candidates, regions: [regions[0]], cacheDir: path.join(tmp, 'region-cache') };
+      await analyzeRoutePair(args);
+      const n = calls.length;
+      await analyzeRoutePair(args);
+      expect(calls).toHaveLength(n);
+      await analyzeRoutePair({ ...args, regions: [{ ...regions[0], x: 101 }] });
+      expect(calls.length).toBeGreaterThan(n);
+    });
+  });
+
   it('throws on an HTTP error so the caller can add a notice', async () => {
     const fn = (async () => new Response('bad key', { status: 401 })) as unknown as typeof fetch;
     const client = createJevClient({ apiKey: 'k', fetch: fn });
-    await expect(analyzeRoutePair({ client, before: png(300, 300), after: png(300, 300), route: '/', candidates })).rejects.toThrow('HTTP 401');
+    await expect(analyzeRoutePair({ client, before: png(300, 300), after: png(300, 300), route: '/', candidates, regions: [] })).rejects.toThrow('HTTP 401');
   });
 });

@@ -6,7 +6,7 @@ import { restore, snapshot, type RestoreOptions, type SnapshotOptions } from './
 const USAGE = `Usage:
   redline compare [base] [head] [options]
   redline snapshot [--root <dir>] [--out <file>]
-  redline restore [--root <dir>] [--replace] <file>
+  redline restore [--root <dir>] [--replace] [--yes] <file>
 
 compare builds both commits, screenshots every page, and writes a report of what changed:
 route changes, the PR diff (unified and split), and before/after pages. base defaults to
@@ -25,6 +25,7 @@ Options:
   --viewport <WxH>     Viewport size (default: 1280x800)
   --chrome <path>      Chrome or Chromium binary to use
   --replace            restore: replace existing data in the imported tables
+  --yes                restore: skip the confirmation (implied by --replace or a non-interactive terminal)
   -h, --help           Show this help`;
 
 export type Parsed =
@@ -45,6 +46,7 @@ export function parseCli(argv: string[]): Parsed {
       viewport: { type: 'string' },
       chrome: { type: 'string' },
       replace: { type: 'boolean' },
+      yes: { type: 'boolean' },
       help: { type: 'boolean', short: 'h' },
     },
   });
@@ -58,7 +60,7 @@ export function parseCli(argv: string[]): Parsed {
     }
     if (!base) throw new Error('restore needs a snapshot file: redline restore <file>');
     if (head) throw new Error(`Unexpected argument: ${head}`);
-    return { command, options: { root, file: path.resolve(base), replace: values.replace } };
+    return { command, options: { root, file: path.resolve(base), replace: values.replace, yes: values.yes } };
   }
   if (command !== 'compare') throw new Error(`Unknown command: ${command}`);
   if (extra.length) throw new Error(`Unexpected argument: ${extra[0]}`);
@@ -99,7 +101,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       return 0;
     }
     if (parsed.command === 'restore') {
-      restore(parsed.options);
+      await restore(parsed.options);
       console.log(`Restored: ${parsed.options.file}`);
       return 0;
     }

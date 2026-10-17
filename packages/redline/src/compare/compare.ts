@@ -253,7 +253,7 @@ export async function compare(options: CompareOptions = {}): Promise<CompareResu
       let analysis: JevAnalysis | undefined;
       if (jev && keepRegions && regions.length && b.image && a.image) {
         try {
-          analysis = await analyzeRoutePair({ client: jev, before: fs.readFileSync(b.image), after: fs.readFileSync(a.image), route: route.path, candidates: jevCandidates(suspects, fileDiffs), cacheDir: path.join(root, '.redline', 'jev-cache') });
+          analysis = await analyzeRoutePair({ client: jev, before: fs.readFileSync(b.image), after: fs.readFileSync(a.image), route: route.path, candidates: jevCandidates(suspects, fileDiffs), regions, cacheDir: path.join(root, '.redline', 'jev-cache') });
         } catch (err) {
           notices.push(`Jev visual linking failed for ${route.path}: ${err instanceof Error ? err.message : String(err)}`);
         }

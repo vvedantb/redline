@@ -139,6 +139,37 @@ export interface JevAnalysis {
   cached: boolean;
 }
 
+/** Crops asked about at most, largest first. */
+const MAX_CROPS = 4;
+const CROP_PAD = 12;
+/** A region this share of the page or more means the diff is a page-wide shift, so pixel regions say little. */
+const MAX_REGION_SHARE = 0.4;
+
+export interface JevRegion {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  pixels?: number;
+}
+
+/** Pixel regions are usable when there is at least one and none covers 40% or more of the after image. */
+function usableRegions(regions: JevRegion[], width: number, height: number): boolean {
+  return regions.length > 0 && regions.every((r) => r.width * r.height < MAX_REGION_SHARE * width * height);
+}
+
+/** Cut a padded rectangle out of a PNG, clamped to the image. Null when nothing is left. */
+function cropPng(source: PNG, r: JevRegion): Buffer | null {
+  const x0 = Math.max(0, Math.floor(r.x - CROP_PAD));
+  const y0 = Math.max(0, Math.floor(r.y - CROP_PAD));
+  const x1 = Math.min(source.width, Math.ceil(r.x + r.width + CROP_PAD));
+  const y1 = Math.min(source.height, Math.ceil(r.y + r.height + CROP_PAD));
+  if (x1 <= x0 || y1 <= y0) return null;
+  const out = new PNG({ width: x1 - x0, height: y1 - y0 });
+  PNG.bitblt(source, out, x0, y0, x1 - x0, y1 - y0, 0, 0);
+  return PNG.sync.write(out);
+}
+
 const BOXES = [
   ['largest', 'the largest area that looks different from before'],
   ['second', 'the second largest area that looks different from before, apart from the largest one'],
@@ -164,7 +195,25 @@ function questionsA(candidates: JevCandidate[]) {
   };
 }
 
-/** Call B: only the `after` screenshot is sent, to keep the request small. */
+/** Primary call B: one meaningful and one culprit question per crop. Crops are state fields `r0`, `r1`, and so on. */
+function questionsCrops(candidates: JevCandidate[], count: number) {
+  const q: Record<string, unknown> = {};
+  const { criteria } = questionsA(candidates).culprit;
+  for (let i = 0; i < count; i++) {
+    q[`r${i}_meaningful`] = {
+      type: 'noul',
+      instructions: `The \`r${i}\` image is a crop of the \`after\` screenshot where pixels changed. Is it a real visible UI change, such as layout, copy, colour or a component, and not rendering noise?`,
+    };
+    q[`r${i}_culprit`] = {
+      type: 'choice',
+      instructions: `The \`r${i}\` image is a crop of the \`after\` screenshot where pixels changed. Which changed file most likely caused this change?`,
+      criteria,
+    };
+  }
+  return q;
+}
+
+/** Fallback call B: only the `after` screenshot is sent, to keep the request small. */
 function questionsB() {
   const q: Record<string, unknown> = {};
   for (const [key, what] of BOXES) {
@@ -180,6 +229,8 @@ export interface AnalyzeOptions {
   after: Buffer;
   route: string;
   candidates: JevCandidate[];
+  /** Pixelmatch regions on the after screenshot. Tight regions replace Jev box questions. */
+  regions: JevRegion[];
   /** `.redline/jev-cache` directory. No caching when unset. */
   cacheDir?: string;
 }
@@ -192,7 +243,7 @@ export async function analyzeRoutePair(options: AnalyzeOptions): Promise<JevAnal
   const { client, candidates } = options;
   const before = prepareImage(options.before);
   const after = prepareImage(options.after);
-  const fingerprint = JSON.stringify([client.model, options.route, questionsA(candidates), questionsB()]);
+  const fingerprint = JSON.stringify([client.model, options.route, questionsA(candidates), questionsB(), questionsCrops(candidates, 1), MAX_CROPS, options.regions.map((r) => [r.x, r.y, r.width, r.height, r.pixels ?? 0])]);
   const key = sha(before.png, after.png, fingerprint);
   const cacheFile = options.cacheDir ? path.join(options.cacheDir, `${key}.json`) : null;
   if (cacheFile && fs.existsSync(cacheFile)) {
@@ -205,10 +256,10 @@ export async function analyzeRoutePair(options: AnalyzeOptions): Promise<JevAnal
 
   let result: JevAnalysis;
   try {
-    result = await run(options, before, after);
+    result = await run(options, MAX_SIDE);
   } catch (err) {
     if (!(err instanceof JevError && err.errorType === 'max_tokens_exceeded')) throw err;
-    result = await run(options, prepareImage(options.before, RETRY_MAX_SIDE), prepareImage(options.after, RETRY_MAX_SIDE));
+    result = await run(options, RETRY_MAX_SIDE);
   }
   if (cacheFile) {
     fs.mkdirSync(path.dirname(cacheFile), { recursive: true });
@@ -219,8 +270,10 @@ export async function analyzeRoutePair(options: AnalyzeOptions): Promise<JevAnal
 
 const asset = (p: PreparedImage): JevAsset => ({ type: 'image', format: 'png', data_base64: p.png.toString('base64') });
 
-async function run(options: AnalyzeOptions, before: PreparedImage, after: PreparedImage): Promise<JevAnalysis> {
+async function run(options: AnalyzeOptions, maxSide: number): Promise<JevAnalysis> {
   const { client, candidates } = options;
+  const before = prepareImage(options.before, maxSide);
+  const after = prepareImage(options.after, maxSide);
   const original = PNG.sync.read(options.after);
   const ids = { before: randomUUID(), after: randomUUID() };
 
@@ -235,7 +288,32 @@ async function run(options: AnalyzeOptions, before: PreparedImage, after: Prepar
   const choice = pick && files.has(pick) ? { file: pick, confidence: Number(a.culprit.confidence ?? 0) } : null;
 
   const boxes: JevBox[] = [];
-  if (changed >= YES) {
+  if (changed >= YES && usableRegions(options.regions, original.width, original.height)) {
+    const top = [...options.regions].sort((p, q) => (q.pixels ?? 0) - (p.pixels ?? 0)).slice(0, MAX_CROPS);
+    const crops = top.map((region) => ({ region, png: cropPng(original, region) })).filter((c): c is { region: JevRegion; png: Buffer } => c.png !== null);
+    if (crops.length) {
+      const state: Record<string, unknown> = { route: options.route };
+      const assets: Record<string, JevAsset> = {};
+      crops.forEach((c, i) => {
+        const id = randomUUID();
+        state[`r${i}`] = id;
+        assets[id] = asset(prepareImage(c.png, maxSide));
+      });
+      const c = await client.query({ state, assets, questions: questionsCrops(candidates, crops.length) });
+      const ranked = crops
+        .map(({ region }, i) => {
+          const pickC = c[`r${i}_culprit`]?.choice as string | undefined;
+          const file = pickC && files.has(pickC) ? pickC : (choice?.file ?? null);
+          return { region, file, meaningful: Number(c[`r${i}_meaningful`]?.noul ?? 0) };
+        })
+        .filter((r) => r.meaningful >= YES)
+        .sort((p, q) => q.meaningful - p.meaningful || (q.region.pixels ?? 0) - (p.region.pixels ?? 0));
+      for (const { region, file, meaningful } of ranked) {
+        const { x, y, width, height } = region;
+        boxes.push({ x, y, width, height, confidence: meaningful, label: file ?? 'pixel region', file });
+      }
+    }
+  } else if (changed >= YES) {
     const b = await client.query({
       state: { route: options.route, after: ids.after },
       assets: { [ids.after]: asset(after) },
