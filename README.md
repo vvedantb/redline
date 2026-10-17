@@ -79,7 +79,7 @@ Three more fields let `compare` capture pages behind sign-in, against a local ba
 }
 ```
 
-- `envFile`: a dotenv file passed to both builds and to the Next.js server as is. The usual strip of secret and Convex keys does not apply to it, so put only what the build needs in it, such as a local backend URL and a publishable auth key. Vite inlines its `VITE_*` keys into the build. A build made with other values is built again.
+- `envFile`: a dotenv file passed to both builds and to the Next.js server as is. The usual strip of secret and Convex keys does not apply to it, so put only what the build needs in it, such as a local backend URL and a publishable auth key. Vite inlines its `VITE_*` keys into the build. A build made with other values is built again. Keep this file and `.redline/` out of git.
 - `network`: `live` turns off the read-only network layer in captured pages, so sign-in requests and backend writes go through. Use it only with a seeded local backend. The default is `read-only`.
 - `auth`: a module whose default export signs the capture browser in. It runs once for each commit, before pages are found, and the cookies and storage it sets are kept for every capture. Secrets stay in Node and never reach the build.
 
