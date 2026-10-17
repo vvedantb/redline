@@ -308,6 +308,25 @@ describe('BuildManager', () => {
     expect(fs.readFileSync(buildPaths(root, shas[0]).log, 'utf8')).toContain('Copied filtered env files: .env.local (kept 2 keys, stripped 3)');
   });
 
+  it('passes the env option unfiltered, and rebuilds only when it changes', async () => {
+    const fake = fakeExec();
+    const env = { VITE_CONVEX_URL: 'http://127.0.0.1:3210' };
+    const builds = new BuildManager({ root, exec: fake.exec, capture: false, env });
+    builds.enqueue(shas[0]);
+    await builds.whenIdle();
+    expect(fake.calls.find((c) => c.cmd === process.execPath)?.env?.VITE_CONVEX_URL).toBe('http://127.0.0.1:3210');
+
+    // A new manager reads meta.json from disk: same env reuses the build, other env rebuilds.
+    const same = new BuildManager({ root, exec: fake.exec, capture: false, env });
+    same.enqueue(shas[0]);
+    await same.whenIdle();
+    expect(fake.calls.filter((c) => c.cmd === process.execPath)).toHaveLength(1);
+    const other = new BuildManager({ root, exec: fake.exec, capture: false });
+    other.enqueue(shas[0]);
+    await other.whenIdle();
+    expect(fake.calls.filter((c) => c.cmd === process.execPath)).toHaveLength(2);
+  });
+
   it('strips secret and Convex keys from the vite build environment', async () => {
     const saved = { ...process.env };
     Object.assign(process.env, { VITE_CONVEX_URL: 'https://happy-animal-123.convex.cloud', CONVEX_DEPLOY_KEY: 'x', VITE_APP_TITLE: 'Demo' });

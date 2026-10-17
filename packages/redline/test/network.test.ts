@@ -66,7 +66,7 @@ describe('injectBootstrap', () => {
 });
 
 /** Run the served bootstrap in a fresh context with a fake window at `href`. */
-function runBootstrap(href: string) {
+function runBootstrap(href: string, live = false) {
   const calls: string[] = [];
   const fetch = async (input: string | Request, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input.url;
@@ -86,10 +86,11 @@ function runBootstrap(href: string) {
     }
   }
   const location = new URL(href);
-  const window: { location: URL; fetch: typeof fetch; XMLHttpRequest: typeof FakeXHR; __redlineNetwork?: RedlineNetworkState } = {
+  const window: { location: URL; fetch: typeof fetch; XMLHttpRequest: typeof FakeXHR; __redlineNetwork?: RedlineNetworkState; __redlineNetworkLive?: boolean } = {
     location,
     fetch,
     XMLHttpRequest: FakeXHR,
+    __redlineNetworkLive: live,
   };
   vm.runInNewContext(bootstrapScript(), { window, URL, URLSearchParams, Request, Response, Headers, Blob, Map, WeakMap, Promise, JSON, Event, setTimeout });
   return { window, calls };
@@ -135,6 +136,13 @@ describe('bootstrap script', () => {
     syncRead.open('GET', '/api/notes', false);
     syncRead.send();
     expect(calls).toEqual(['GET /__redline/network/fixtures', 'xhr GET /api/notes (sync)']);
+  });
+
+  it('passes writes through in History pages when compare runs live', async () => {
+    const { window, calls } = runBootstrap(BASE, true);
+    expect(window.__redlineNetwork).toMatchObject({ mode: 'passthrough', readOnly: false });
+    expect(await (await window.fetch('/api/notes', { method: 'POST' })).json()).toEqual({ live: true });
+    expect(calls).toEqual(['POST /api/notes']);
   });
 
   it('leaves live pages alone', async () => {

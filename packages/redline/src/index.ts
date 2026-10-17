@@ -1,5 +1,5 @@
 export { compare, diffBetween, readConfig, changedBetween, CONFIG_FILE } from './compare/compare';
-export type { CompareOptions, CompareResult, RedlineConfig } from './compare/compare';
+export type { CompareOptions, CompareResult, LoginContext, LoginHook, NetworkPolicy, RedlineConfig } from './compare/compare';
 export { discoverRoutes, matchPattern, patternFor, parseSitemap, DEFAULT_MAX_ROUTES } from './routes/discover';
 export type { DiscoverOptions, DiscoverResult, DiscoveredRoute, SkippedRoute, RouteOrigin } from './routes/discover';
 export { affectedRoutes, frameworkForRoot, isDynamicRoute } from './routes/affected';

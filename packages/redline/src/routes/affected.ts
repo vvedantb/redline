@@ -55,6 +55,25 @@ function nextContainers(appRoot: string, files: string[], entries: Map<string, s
   return out;
 }
 
+/**
+ * TanStack Router nesting: `__root` wraps every page, and a layout route (`posts.tsx` next to a
+ * `posts/` folder, or `posts/route.tsx`) wraps every page in that folder.
+ */
+function viteContainers(appRoot: string, files: string[], entries: Map<string, string>): Map<string, string[]> {
+  const out = appWideConfig(appRoot, files, entries);
+  const routesDir = path.join(appRoot, 'src', 'routes');
+  const pages = [...entries.keys()];
+  const under = (dir: string) => pages.filter(p => p.startsWith(dir + path.sep));
+  for (const file of files) {
+    if (!file.startsWith(routesDir + path.sep)) continue;
+    const name = path.basename(file).replace(/\.[^.]+$/, '');
+    if (name === '__root') out.set(file, pages);
+    else if (name === 'route') out.set(file, under(path.dirname(file)));
+    else if (fs.existsSync(path.join(path.dirname(file), name))) out.set(file, under(path.join(path.dirname(file), name)));
+  }
+  return out;
+}
+
 const NEXT_APP_PAGE = /^app\/(.+\/)?page\.(tsx|ts|jsx|js|mdx|md)$/;
 const NEXT_PAGES_HIGH = /^pages\/(?!api\/|_)(.+)\.(tsx|ts|jsx|js|mdx|md)$/;
 const NEXT_PAGE_FILE = /^(page|layout)\.(tsx|ts|jsx|js|mdx)$/;
@@ -139,7 +158,7 @@ const FRAMEWORKS: FrameworkAdapter[] = [
     normalize: rel => rel,
     directRoutes: detectGenericRoutes,
     routeEntries: viteRouteEntries,
-    containers: appWideConfig,
+    containers: viteContainers,
   },
   {
     name: 'generic',

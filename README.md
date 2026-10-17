@@ -67,6 +67,36 @@ Optional `redline.config.json` in the app directory:
 }
 ```
 
+### Signed-in pages
+
+Three more fields let `compare` capture pages behind sign-in, against a local backend you can throw away:
+
+```json
+{
+  "envFile": ".env.redline",
+  "network": "live",
+  "auth": "redline.auth.mjs"
+}
+```
+
+- `envFile`: a dotenv file passed to both builds and to the Next.js server as is. The usual strip of secret and Convex keys does not apply to it, so put only what the build needs in it, such as a local backend URL and a publishable auth key. Vite inlines its `VITE_*` keys into the build. A build made with other values is built again. Keep this file and `.redline/` out of git.
+- `network`: `live` turns off the read-only network layer in captured pages, so sign-in requests and backend writes go through. Use it only with a seeded local backend. The default is `read-only`.
+- `auth`: a module whose default export signs the capture browser in. It runs once for each commit, before pages are found, and the cookies and storage it sets are kept for every capture. Secrets stay in Node and never reach the build.
+
+```js
+// redline.auth.mjs
+export default async function login({ page, baseUrl, side }) {
+  // baseUrl is where this commit's build is served, e.g. http://127.0.0.1:4321/__redline/h/<sha>
+  await page.goto(`${baseUrl}/sign-in`);
+  await page.fill('input[name=email]', process.env.TEST_USER_EMAIL);
+  await page.fill('input[name=password]', process.env.TEST_USER_PASSWORD);
+  await page.click('button[type=submit]');
+  await page.waitForURL(/\/dashboard$/);
+}
+```
+
+Both commits are served from `127.0.0.1`, which shares cookies across ports, so a hook should return early when it finds a session. With `auth` set, the fixed capture clock is the time the run starts instead of 1 January 2025: a clock in the past makes cookies set from script expire at once.
+
 ## Node API
 
 ```ts
@@ -91,7 +121,8 @@ const { routes: hit, removed, unplaced, limits } = affectedRoutes({
 ## Compare limits
 
 - Needs Playwright and Chromium (`npx playwright install chromium`), or `--chrome` pointing at an installed Chrome.
-- Pages behind sign-in are listed as "Couldn't check". There is no login step yet.
+- Pages behind sign-in are listed as "Couldn't check", unless you add a login hook (see [Signed-in pages](#signed-in-pages)).
+- Signed-in captures with `network: live` read and write the backend that `envFile` points at. Base is captured before head, so a page that writes on load can change what head sees.
 - Pages that load data at runtime see History's read-only network layer: reads are replayed from `.redline/network-fixtures.json` when a fixture matches, writes never leave the browser. Pages that depend on live data may differ between runs.
 - Both commits must build. A failed build stops the run and prints the end of its log.
 - Client-side routers must respect Vite's `base` (`import.meta.env.BASE_URL`).

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { HISTORY_ENV_ALLOWLIST, filterEnvRecord, filterEnvText, isHistoryEnvKeyAllowed } from '../src/env';
+import { HISTORY_ENV_ALLOWLIST, filterEnvRecord, filterEnvText, isHistoryEnvKeyAllowed, parseEnvText } from '../src/env';
 
 describe('isHistoryEnvKeyAllowed', () => {
   it('allows publishable and public keys', () => {
@@ -62,5 +62,12 @@ describe('filterEnvRecord', () => {
     expect(
       filterEnvRecord({ PATH: '/bin', HOME: '/h', VITE_CONVEX_URL: 'x', CONVEX_DEPLOYMENT: 'dev:x', GITHUB_ACCESS_TOKEN: 'x', VITE_BACKEND: 'https://a.convex.site' }),
     ).toEqual({ PATH: '/bin', HOME: '/h' });
+  });
+});
+
+describe('parseEnvText', () => {
+  it('reads every assignment unfiltered, unquoting values and dropping comments', () => {
+    const text = '# local backend\nVITE_CONVEX_URL=http://127.0.0.1:3210\nexport CLERK_KEY="pk_test_a=b" \nNOTE=hello # trailing\nnot an assignment\n';
+    expect(parseEnvText(text)).toEqual({ VITE_CONVEX_URL: 'http://127.0.0.1:3210', CLERK_KEY: 'pk_test_a=b', NOTE: 'hello' });
   });
 });

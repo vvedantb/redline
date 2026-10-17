@@ -102,7 +102,7 @@ export function installRedlineNetwork(win: Window & typeof globalThis): void {
   if (win.__redlineNetwork) return;
   const inHistory = win.location.pathname.includes('/__redline/h/');
   const param = new URLSearchParams(win.location.search).get('redlineNetwork');
-  const mode: NetworkMode = inHistory ? 'replay' : param === 'capture' ? 'capture' : 'passthrough';
+  const mode: NetworkMode = inHistory && !win.__redlineNetworkLive ? 'replay' : param === 'capture' ? 'capture' : 'passthrough';
   const base = win.location.href;
   const originalFetch = win.fetch.bind(win);
   let fixtures: NetworkFixtures = { version: 1, entries: [] };
@@ -233,5 +233,7 @@ export function installRedlineNetwork(win: Window & typeof globalThis): void {
 declare global {
   interface Window {
     __redlineNetwork?: RedlineNetworkState;
+    /** Set by `compare` with `network: 'live'`: History pages pass every request through. */
+    __redlineNetworkLive?: boolean;
   }
 }
