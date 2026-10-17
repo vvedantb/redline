@@ -5,7 +5,7 @@ import { PNG } from 'pngjs';
 import { afterAll, describe, expect, it } from 'vitest';
 import { parseCli } from '../src/cli';
 import { appPathOf, urlFor, type PageCapture } from '../src/compare/capture';
-import { classify, rankPages } from '../src/compare/classify';
+import { BLANK_BOTH, classify, rankPages } from '../src/compare/classify';
 import { diffImages, regionsFromMask } from '../src/compare/pixels';
 import { renderIndex, renderPage, writeReport, type Report, type ReportPage } from '../src/compare/report';
 import { capRoutes, matchPattern, parseSitemap, patternFor, type DiscoveredRoute } from '../src/routes/discover';
@@ -150,6 +150,7 @@ describe('classify', () => {
     expect(classify({ ...both, before: page(), after: page({ failed: 'timeout' }) }).status).toBe('skipped');
     expect(classify({ ...both, before: page(), after: page({ finalPath: '/login' }) })).toEqual({ status: 'skipped', reason: 'Needs sign-in (redirects to /login)' });
     expect(classify({ ...both, before: page({ notFound: true }), after: page({ notFound: true }) }).status).toBe('skipped');
+    expect(classify({ ...both, before: page({ content: 0 }), after: page({ content: 0 }) })).toEqual({ status: 'skipped', reason: BLANK_BOTH });
   });
 
   it('ranks broken first, then changed pages with a direct cause', () => {
