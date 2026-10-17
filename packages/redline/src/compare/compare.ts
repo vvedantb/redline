@@ -1,8 +1,11 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import type { BrowserContext, Page } from 'playwright-core';
 import { BuildManager } from '../build';
 import { parseUnifiedDiff } from '../diff';
+import { parseEnvText } from '../env';
 import { analyzeRoutePair, createJevClient, JEV_SKIPPED_NOTICE, mockJevFetch, type JevAnalysis, type JevCandidate, type JevClient } from '../jev';
 import { resolveCommit } from '../server';
 import { affectedRoutes, type AffectedRoute, type AffectedRoutesResult, type Framework } from '../routes/affected';
@@ -35,7 +38,25 @@ export interface CompareOptions {
   jev?: JevClient;
   /** Progress messages. */
   log?: (message: string) => void;
+  /** Dotenv file passed to both builds unfiltered, e.g. a local backend URL. Overrides `redline.config.json`. */
+  envFile?: string;
+  /** `live` lets pages reach the network, writes included. Use only with a disposable backend. Default `read-only`. */
+  network?: NetworkPolicy;
+  /** Signs in before pages are found. A function, or a module path whose default export is one. */
+  auth?: LoginHook | string;
 }
+
+export type NetworkPolicy = 'read-only' | 'live';
+
+export interface LoginContext {
+  /** A page in the capture browser. Cookies and storage it sets are kept for every capture. */
+  page: Page;
+  /** Where this commit's build is served, without a trailing slash. Paths go after it. */
+  baseUrl: string;
+  side: 'base' | 'head';
+}
+
+export type LoginHook = (context: LoginContext) => Promise<void>;
 
 export interface CompareResult {
   report: Report;
@@ -50,6 +71,11 @@ export interface RedlineConfig {
   seeds?: string[];
   maxRoutes?: number;
   viewport?: Viewport;
+  /** Dotenv file, relative to the app directory, passed to both builds unfiltered. */
+  envFile?: string;
+  network?: NetworkPolicy;
+  /** Module, relative to the app directory, whose default export is a `LoginHook`. */
+  auth?: string;
 }
 
 export const CONFIG_FILE = 'redline.config.json';
@@ -140,6 +166,36 @@ function suspectsFor(pattern: string | null, affected: AffectedRoutesResult): Af
   return (affected.routes.find((r) => r.route === pattern) ?? affected.removed.find((r) => r.route === pattern))?.sources ?? [];
 }
 
+function readEnvFile(root: string, file: string | undefined): Record<string, string> | undefined {
+  if (!file) return undefined;
+  const abs = path.resolve(root, file);
+  if (!fs.existsSync(abs)) throw new Error(`envFile ${file} does not exist.`);
+  return parseEnvText(fs.readFileSync(abs, 'utf8'));
+}
+
+async function loadLoginHook(root: string, auth: LoginHook | string | undefined): Promise<LoginHook | null> {
+  if (!auth) return null;
+  if (typeof auth === 'function') return auth;
+  const mod: { default?: unknown } = await import(pathToFileURL(path.resolve(root, auth)).href);
+  if (typeof mod.default !== 'function') throw new Error(`auth module ${auth} has no default export function.`);
+  return mod.default as LoginHook;
+}
+
+/** Run the login hook once per commit, in the shared capture context. */
+async function signIn(context: BrowserContext, login: LoginHook, sides: [LoginContext['side'], string][], log: (m: string) => void): Promise<void> {
+  for (const [side, baseUrl] of sides) {
+    const page = await context.newPage();
+    try {
+      await login({ page, baseUrl, side });
+      log(`Signed in (${side}).`);
+    } catch (err) {
+      throw new Error(`Login hook failed for ${side}: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      await page.close().catch(() => undefined);
+    }
+  }
+}
+
 function shot(page: PageCapture | undefined, outDir: string): PageShot | null {
   if (!page?.image || page.failed) return null;
   return { image: path.relative(outDir, page.image).split(path.sep).join('/'), width: page.width!, height: page.height!, status: page.status };
@@ -166,6 +222,9 @@ export async function compare(options: CompareOptions = {}): Promise<CompareResu
   const viewport = options.viewport ?? config.viewport ?? DEFAULT_VIEWPORT;
   const seeds = [...(config.seeds ?? []), ...(options.seeds ?? [])];
   const outDir = path.resolve(options.out ?? path.join(root, '.redline', 'report'));
+  const env = readEnvFile(root, options.envFile ?? config.envFile);
+  const network = options.network ?? config.network ?? 'read-only';
+  const login = await loadLoginHook(root, options.auth ?? config.auth);
 
   const baseRefName = options.base ?? 'HEAD~1';
   const headRefName = options.head ?? 'HEAD';
@@ -184,7 +243,7 @@ export async function compare(options: CompareOptions = {}): Promise<CompareResu
   const fileDiffs = diffBetween(top, rel, baseSha, headSha);
   log(`${changed.length + deleted.length} changed file(s); framework ${framework}`);
 
-  const builds = new BuildManager({ root, framework: buildFramework(framework), capture: false, maxReady: 10 });
+  const builds = new BuildManager({ root, framework: buildFramework(framework), capture: false, maxReady: 10, env });
   const closers: (() => Promise<void>)[] = [];
   try {
     for (const sha of [baseSha, headSha]) {
@@ -207,7 +266,9 @@ export async function compare(options: CompareOptions = {}): Promise<CompareResu
 
     const browser = await launchBrowser(root, options.browser);
     closers.push(() => browser.close());
-    const context = await stableContext(browser, viewport);
+    const context = await stableContext(browser, viewport, login ? new Date() : undefined);
+    if (network === 'live') await context.addInitScript('window.__redlineNetworkLive = true;');
+    if (login) await signIn(context, login, [['base', basePrefix], ['head', headPrefix]], log);
 
     log('Finding pages...');
     const [before, after] = await Promise.all([

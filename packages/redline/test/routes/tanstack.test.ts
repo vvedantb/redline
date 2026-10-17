@@ -83,3 +83,35 @@ describe('TanStack route modules next to helpers', () => {
     expect(known.sort()).toEqual(['/', '/posts/[id]/edit', '/pricing', '/projects/[id]', '/settings']);
   });
 });
+
+describe('TanStack layouts', () => {
+  let app: string;
+  const write = (rel: string, content: string) => {
+    const file = path.join(app, rel);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, content);
+  };
+
+  beforeAll(() => {
+    app = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'redline-tanstack-layouts-')));
+    write('package.json', JSON.stringify({ devDependencies: { vite: '^6' } }));
+    write('src/Shell.tsx', 'export const Shell = () => null;');
+    write('src/Sidebar.tsx', 'export const Sidebar = () => null;');
+    write('src/routes/__root.tsx', "import { Shell } from '../Shell';\nexport const Route = createRootRoute({});");
+    write('src/routes/index.tsx', "export const Route = createFileRoute('/')({});");
+    write('src/routes/_app.tsx', "import { Sidebar } from '../Sidebar';\nexport const Route = createFileRoute('/_app')({});");
+    write('src/routes/_app/settings.tsx', "export const Route = createFileRoute('/_app/settings')({});");
+  });
+
+  afterAll(() => fs.rmSync(app, { recursive: true, force: true }));
+
+  it('traces a component in __root to every page', () => {
+    const { routes } = affectedRoutes({ root: app, changedFiles: ['src/Shell.tsx'] });
+    expect(routes.map((r) => r.route).sort()).toEqual(['/', '/settings']);
+  });
+
+  it('traces a component in a layout route to the pages under it', () => {
+    const { routes } = affectedRoutes({ root: app, changedFiles: ['src/Sidebar.tsx'] });
+    expect(routes.map((r) => r.route)).toEqual(['/settings']);
+  });
+});

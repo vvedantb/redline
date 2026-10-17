@@ -74,8 +74,12 @@ export async function launchBrowser(root: string, options: BrowserOptions = {}):
   }
 }
 
-/** A browser context set up for repeatable captures: fixed clock, seeded random, no motion. */
-export async function stableContext(browser: Browser, viewport: Viewport = DEFAULT_VIEWPORT): Promise<BrowserContext> {
+/**
+ * A browser context set up for repeatable captures: fixed clock, seeded random, no motion.
+ * `now` moves the fixed clock. Signed-in captures need the real time: a clock in the past makes
+ * every cookie the app sets from script expire at once, and session tokens look issued in the future.
+ */
+export async function stableContext(browser: Browser, viewport: Viewport = DEFAULT_VIEWPORT, now: Date = FIXED_TIME): Promise<BrowserContext> {
   const context = await browser.newContext({
     viewport,
     deviceScaleFactor: 1,
@@ -85,7 +89,7 @@ export async function stableContext(browser: Browser, viewport: Viewport = DEFAU
     timezoneId: 'UTC',
     serviceWorkers: 'block',
   });
-  await context.clock?.setFixedTime(FIXED_TIME);
+  await context.clock?.setFixedTime(now);
   await context.addInitScript(SEEDED_RANDOM);
   return context;
 }

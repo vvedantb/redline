@@ -65,6 +65,18 @@ export function filterEnvText(contents: string): { text: string; kept: number; s
   return { text: header + out.map((l) => l + '\n').join(''), kept, stripped };
 }
 
+/** Every `KEY=value` in a dotenv file, unfiltered. Surrounding quotes are removed. */
+export function parseEnvText(contents: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const line of contents.split(/\r?\n/)) {
+    const m = ASSIGNMENT.exec(line);
+    if (!m) continue;
+    const value = m[2].trim();
+    out[m[1]] = /^(["'`]).*\1$/.test(value) ? value.slice(1, -1) : value.replace(/\s+#.*$/, '');
+  }
+  return out;
+}
+
 /**
  * Process env without secret or Convex keys. Other variables (PATH, HOME, ...) stay, because
  * the build tools need them.

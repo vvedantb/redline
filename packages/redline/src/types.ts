@@ -98,6 +98,8 @@ export interface BuildMeta {
   /** Where the build is served, e.g. `/__redline/h/<sha>/`. */
   basePath: string;
   error?: string;
+  /** Hash of the extra env the build ran with. Absent when there was none. */
+  envKey?: string;
 }
 
 export interface BuildJob extends BuildMeta {

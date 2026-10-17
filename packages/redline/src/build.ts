@@ -66,6 +66,11 @@ export interface BuildManagerOptions {
   spawnServer?: SpawnServerFn;
   /** Fixtures for the History network layer. Default `<root>/.redline/network-fixtures.json`. */
   networkFixtures?: string;
+  /**
+   * Env passed as is, not filtered, to builds and Next.js servers. A build made with other
+   * values is built again. For compare runs against a local backend.
+   */
+  env?: Record<string, string>;
 }
 
 export const DEFAULT_MAX_READY = 5;
@@ -223,6 +228,7 @@ export function readMeta(file: string): BuildMeta | null {
     finishedAt: str(data.finishedAt),
     basePath: historyBasePath(data.sha),
     ...(typeof data.error === 'string' ? { error: data.error } : {}),
+    ...(typeof data.envKey === 'string' ? { envKey: data.envKey } : {}),
   };
 }
 
@@ -440,7 +446,8 @@ export class BuildManager {
   enqueue(sha: string): BuildJob {
     const p = this.paths(sha);
     const existing = this.jobs.get(sha);
-    if (existing && existing.status !== 'failed') {
+    const envKey = this.envKey();
+    if (existing && existing.status !== 'failed' && existing.envKey === envKey) {
       if (existing.status !== 'ready' || this.isBuilt(existing)) return this.toJob(existing);
     }
     this.servers.stop(sha);
@@ -456,11 +463,19 @@ export class BuildManager {
       startedAt: null,
       finishedAt: null,
       basePath: historyBasePath(sha),
+      envKey,
     };
     this.save(meta);
     this.queue.push(sha);
     this.pump();
     return this.toJob(meta);
+  }
+
+  private envKey(): string | undefined {
+    const env = this.options.env;
+    if (!env || !Object.keys(env).length) return undefined;
+    const sorted = Object.keys(env).sort().map((k) => [k, env[k]]);
+    return createHash('sha256').update(JSON.stringify(sorted)).digest('hex').slice(0, 16);
   }
 
   /** Cancel a queued or running build, stop its server and delete its files. */
@@ -505,7 +520,7 @@ export class BuildManager {
         // Build removed while the server runs.
       }
     };
-    const port = await this.servers.start(sha, { script: path.join(cwd, 'server.js'), cwd, env: snapshotEnv(process.env), log });
+    const port = await this.servers.start(sha, { script: path.join(cwd, 'server.js'), cwd, env: { ...snapshotEnv(process.env), ...this.options.env }, log });
     return `http://127.0.0.1:${port}`;
   }
 
@@ -641,7 +656,7 @@ export class BuildManager {
     if (this.options.configFile) args.push('--config', path.join(p.worktree, path.relative(top, fs.realpathSync(this.options.configFile))));
     // REDLINE=0 turns off tagging and endpoints in the built app. Secret and Convex keys in the
     // shell would otherwise be inlined as `import.meta.env.VITE_*`.
-    await run(process.execPath, args, wtConfigDir, { ...filterEnvRecord(process.env), NODE_ENV: 'production', REDLINE: '0' });
+    await run(process.execPath, args, wtConfigDir, { ...filterEnvRecord(process.env), ...this.options.env, NODE_ENV: 'production', REDLINE: '0' });
   }
 
   /**
@@ -659,7 +674,7 @@ export class BuildManager {
     this.copyLiveEnvFiles(p, wtApp, log);
     writeSnapshotConfig(wtApp, { basePath: historyBasePath(sha).replace(/\/$/, ''), tracingRoot: top });
     log(`\n[redline] Snapshot config: output 'standalone', basePath ${historyBasePath(sha).replace(/\/$/, '')}.\n`);
-    await run(process.execPath, [nextBin(wtApp), 'build', ...nextBuildFlags(wtApp)], wtApp, snapshotEnv(process.env));
+    await run(process.execPath, [nextBin(wtApp), 'build', ...nextBuildFlags(wtApp)], wtApp, { ...snapshotEnv(process.env), ...this.options.env });
     assembleStandalone(wtApp, p.standalone, top);
   }
 
