@@ -24,6 +24,8 @@ Options:
   --seed <path>        Extra page to capture, e.g. /blog/hello. Repeatable.
   --viewport <WxH>     Viewport size (default: 1280x800)
   --chrome <path>      Chrome or Chromium binary to use
+  --dev                compare: run each commit's dev server instead of a production build
+  --concurrency <n>    compare: pages loaded at once (default: 4)
   --replace            restore: replace existing data in the imported tables
   --yes                restore: skip the confirmation (implied by --replace or a non-interactive terminal)
   -h, --help           Show this help`;
@@ -45,6 +47,8 @@ export function parseCli(argv: string[]): Parsed {
       seed: { type: 'string', multiple: true },
       viewport: { type: 'string' },
       chrome: { type: 'string' },
+      dev: { type: 'boolean' },
+      concurrency: { type: 'string' },
       replace: { type: 'boolean' },
       yes: { type: 'boolean' },
       help: { type: 'boolean', short: 'h' },
@@ -79,6 +83,12 @@ export function parseCli(argv: string[]): Parsed {
     options.viewport = { width: Number(m[1]), height: Number(m[2]) };
   }
   if (values.chrome) options.browser = { executablePath: values.chrome };
+  if (values.dev) options.serve = 'dev';
+  if (values.concurrency !== undefined) {
+    const n = Number(values.concurrency);
+    if (!Number.isInteger(n) || n < 1) throw new Error('--concurrency must be a positive whole number');
+    options.concurrency = n;
+  }
   return { command: 'compare', options };
 }
 
@@ -108,6 +118,10 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     const { report, reportFile } = await compare({ ...parsed.options, log: (m) => console.log(m) });
     const s = report.summary;
     console.log(`\n${s.broken} looks broken, ${s.changed} changed, ${s.added} new, ${s.removed} removed, ${s.skipped} couldn't check, ${s.unchanged} unchanged`);
+    for (const g of report.shared ?? []) {
+      const from = g.suspects[0] ? `, likely from ${g.suspects[0].file}` : '';
+      console.log(`Shared change: ${g.regions.length} area${g.regions.length === 1 ? '' : 's'} changed the same way on ${g.pages.length} pages${from}.`);
+    }
     for (const n of report.notices) console.log(`Note: ${n}`);
     console.log(`Report: ${reportFile}`);
     return 0;

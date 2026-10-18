@@ -324,7 +324,7 @@ function hasPackages(dir: string): boolean {
   }
 }
 
-function viteBin(cwd: string): string {
+export function viteBin(cwd: string): string {
   const require = createRequire(path.join(cwd, 'package.json'));
   const pkgFile = require.resolve('vite/package.json');
   const bin = JSON.parse(fs.readFileSync(pkgFile, 'utf8')).bin;
@@ -676,6 +676,29 @@ export class BuildManager {
     log(`\n[redline] Snapshot config: output 'standalone', basePath ${historyBasePath(sha).replace(/\/$/, '')}.\n`);
     await run(process.execPath, [nextBin(wtApp), 'build', ...nextBuildFlags(wtApp)], wtApp, { ...snapshotEnv(process.env), ...this.options.env });
     assembleStandalone(wtApp, p.standalone, top);
+  }
+
+  /**
+   * A worktree of `sha` with dependencies and the live env files, for `compare` in dev-server
+   * mode. Env files are copied whole: the dev server runs locally and its server code needs them.
+   * Returns the config directory inside the worktree. Call `remove()` when done.
+   */
+  async devWorktree(sha: string, log: Log): Promise<{ dir: string; remove: () => void }> {
+    const p = this.paths(sha);
+    const controller = new AbortController();
+    const run: Run = (cmd, args, cwd, env) => {
+      log(`\n$ ${[cmd === process.execPath ? 'node' : cmd, ...args].join(' ')}\n`);
+      return this.exec(cmd, args, { cwd, env, log, signal: controller.signal });
+    };
+    const dir = await this.addWorktree(sha, p, run, log);
+    await this.installDependencies(p, run, log);
+    const { top, configDir, rel } = this.layout();
+    // Linked node_modules point at the main tree, outside the worktree. Turbopack refuses them
+    // unless its root contains both, as the snapshot builds set it.
+    if (this.framework === 'next') writeSnapshotConfig(dir, { basePath: '', tracingRoot: top, dev: true });
+    const copied = [...copyEnvFiles(top, p.worktree, false), ...(rel ? copyEnvFiles(configDir, dir, false) : [])];
+    log(`\n[redline] Copied env files for the dev server: ${copied.map((f) => f.name).join(', ') || 'none'}.\n`);
+    return { dir, remove: () => this.removeWorktree(p.worktree, log) };
   }
 
   /** Git top level, the config directory, and the config directory relative to the top level. */

@@ -50,6 +50,8 @@ export interface PageCapture {
   content: number;
   /** Same-origin links, as app paths. */
   links: string[];
+  /** Convex mutations and actions the write guard dropped. */
+  blockedWrites: number;
   image?: string;
   width?: number;
   height?: number;
@@ -135,10 +137,38 @@ async function settle(page: Page): Promise<void> {
 }
 
 /**
+ * Init script for signed-in runs on a live backend: drops Convex mutation and action messages on
+ * every WebSocket, so captured pages can read but not write. The client keeps waiting for them.
+ */
+export const CONVEX_WRITE_GUARD = `(() => {
+  const send = WebSocket.prototype.send;
+  window.__redlineBlockedWrites = 0;
+  WebSocket.prototype.send = function (data) {
+    if (typeof data === 'string' && data.charCodeAt(0) === 123) {
+      try {
+        const type = JSON.parse(data).type;
+        if (type === 'Mutation' || type === 'Action') {
+          window.__redlineBlockedWrites++;
+          return;
+        }
+      } catch {}
+    }
+    return send.call(this, data);
+  };
+})();`;
+
+export interface CaptureOptions {
+  /** CSS selectors painted over in the screenshot, such as clocks and live counters. */
+  mask?: string[];
+  /** CSS selectors hidden before the screenshot, such as dev-only toolbars that cover the page. */
+  hide?: string[];
+}
+
+/**
  * Load one app path and record what it showed. Writes a screenshot to `screenshot` when given.
  * Never throws for a page that fails: the failure is in the result.
  */
-export async function capturePage(context: BrowserContext, prefix: string, appPath: string, screenshot?: string): Promise<PageCapture> {
+export async function capturePage(context: BrowserContext, prefix: string, appPath: string, screenshot?: string, options: CaptureOptions = {}): Promise<PageCapture> {
   const page = await context.newPage();
   const errors: string[] = [];
   const consoleErrors: string[] = [];
@@ -146,18 +176,21 @@ export async function capturePage(context: BrowserContext, prefix: string, appPa
   page.on('console', (msg) => {
     if (msg.type() === 'error') consoleErrors.push(msg.text().split('\n')[0]);
   });
-  const result: PageCapture = { path: appPath, finalPath: appPath, status: 0, errors, consoleErrors, appError: false, notFound: false, content: 0, links: [] };
+  const result: PageCapture = { path: appPath, finalPath: appPath, status: 0, errors, consoleErrors, appError: false, notFound: false, content: 0, links: [], blockedWrites: 0 };
   try {
     const response = await page.goto(urlFor(prefix, appPath), { waitUntil: 'load', timeout: 30_000 });
     result.status = response?.status() ?? 0;
     await settle(page);
+    if (options.hide?.length) await page.addStyleTag({ content: `${options.hide.join(', ')} { visibility: hidden !important; }` }).catch(() => undefined);
     result.finalPath = appPathOf(prefix, page.url()) ?? new URL(page.url()).pathname;
     const info = await page.evaluate(() => ({
       text: document.body?.innerText ?? '',
       media: document.querySelectorAll('img, video, canvas, svg, iframe').length,
       links: Array.from(document.querySelectorAll('a[href]'), (a) => (a as HTMLAnchorElement).href),
       height: document.documentElement.scrollHeight,
+      blocked: (window as Window & { __redlineBlockedWrites?: number }).__redlineBlockedWrites ?? 0,
     }));
+    result.blockedWrites = info.blocked;
     result.appError = APP_ERROR.test(info.text);
     result.notFound = result.status === 404 || NOT_FOUND.test(info.text);
     result.content = info.text.trim().length + info.media;
@@ -172,6 +205,8 @@ export async function capturePage(context: BrowserContext, prefix: string, appPa
         clip: { x: 0, y: 0, width: viewport.width, height },
         animations: 'disabled',
         caret: 'hide',
+        mask: options.mask?.map((selector) => page.locator(selector)),
+        maskColor: '#9ca3af',
       });
       result.image = screenshot;
       result.width = viewport.width;

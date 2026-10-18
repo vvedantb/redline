@@ -5,6 +5,7 @@ import { STATUS_LABELS, type PageStatus } from './classify';
 import type { DiffFile, DiffHunk } from '../types';
 import { DIFF_CSS, DIFF_JS, diffAnchor, renderFileDiff } from './diffview';
 import type { JevAnalysis } from '../jev';
+import type { SharedChange } from './groups';
 import type { Region } from './pixels';
 
 export interface CommitRef {
@@ -40,6 +41,12 @@ export interface ReportPage {
   errors: string[];
   /** Jev visual linking, when it ran for this page. */
   jev?: JevAnalysis;
+  /** Ids of the shared changes this page shows. */
+  shared?: number[];
+  /** Changed areas dropped because they also differ between two loads of head. */
+  unstable?: number;
+  /** Convex writes the guard dropped while capturing head. */
+  blockedWrites?: number;
 }
 
 export interface ReportFileDiff {
@@ -79,6 +86,8 @@ export interface Report {
   head: CommitRef;
   pages: ReportPage[];
   summary: Record<PageStatus, number>;
+  /** Changes that look the same on several pages, most pages first. */
+  shared?: SharedChange[];
   /** Limits that were hit; each one means the report may be incomplete. */
   notices: string[];
   changedFiles: string[];
@@ -197,8 +206,31 @@ function prDiffSection(r: Report): string {
     + `<div id="pr-diff">${r.fileDiffs.map(renderFileDiff).join('')}</div></section>`;
 }
 
+const sameBox = (a: Region, b: Region) => a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height;
+
+/** Every changed area of the page belongs to a shared change, so the group already covers it. */
+function onlyShared(r: Report, p: ReportPage): boolean {
+  const groups = (p.shared ?? []).map((id) => r.shared?.[id]).filter((g): g is SharedChange => !!g);
+  return p.status === 'changed' && groups.length > 0 && p.regions.every((reg) => groups.some((g) => g.regions.some((gr) => sameBox(gr, reg))));
+}
+
+function sharedSection(r: Report): string {
+  if (!r.shared?.length) return '';
+  const byId = new Map(r.pages.map((p) => [p.id, p]));
+  const items = r.shared.map((g) => {
+    const pages = g.pages.map((id) => byId.get(id)).filter((p): p is ReportPage => !!p);
+    const first = pages[0];
+    const thumb = first?.after ? `<div class="thumb" style="background-image:url('${esc(first.after.image)}')"></div>` : '';
+    const from = g.suspects.length ? `Likely from ${esc(g.suspects.slice(0, 3).map((s) => s.file).join(', '))}` : 'No changed file traced';
+    const links = pages.map((p) => `<li><a href="pages/${p.id}.html">${esc(p.path)}</a></li>`).join('');
+    const areas = `${g.regions.length} area${g.regions.length === 1 ? '' : 's'}`;
+    return `<div class="card">${thumb}<div class="body"><span class="badge" style="background:${COLORS.changed}">${pages.length} pages</span><div class="path">Same change on ${pages.length} pages</div><div class="why">${from}. ${areas}.</div><details><summary>Pages</summary><ul>${links}</ul></details></div></div>`;
+  });
+  return `<h2>Shared changes</h2><p class="muted">The same area changed the same way on each of these pages. Pages with no other change are listed here only.</p><div class="grid">${items.join('')}</div>`;
+}
+
 export function renderIndex(r: Report): string {
-  const attention = r.pages.filter((p) => p.status !== 'unchanged');
+  const attention = r.pages.filter((p) => p.status !== 'unchanged' && !onlyShared(r, p));
   const unchanged = r.pages.filter((p) => p.status === 'unchanged');
   const chips = (Object.keys(STATUS_LABELS) as PageStatus[])
     .filter((s) => r.summary[s])
@@ -211,7 +243,7 @@ export function renderIndex(r: Report): string {
   const rest = unchanged.length
     ? `<details><summary>${unchanged.length} unchanged page${unchanged.length === 1 ? '' : 's'}</summary><div class="grid">${unchanged.map((p) => card(p, '')).join('')}</div></details>`
     : '';
-  return doc('Redline report', `<header><h1>What changed</h1>${commitLine(r)}<div class="chips">${chips}</div></header><main>${notices}${routeChangesSection(r)}<h2>Pages</h2>${lead}${rest}${prDiffSection(r)}</main>`, r.fileDiffs.length ? DIFF_JS : '');
+  return doc('Redline report', `<header><h1>What changed</h1>${commitLine(r)}<div class="chips">${chips}</div></header><main>${notices}${routeChangesSection(r)}${sharedSection(r)}<h2>Pages</h2>${lead}${rest}${prDiffSection(r)}</main>`, r.fileDiffs.length ? DIFF_JS : '');
 }
 
 function sideView(label: string, shot: PageShot | null, regions: Region[], emptyText: string, jev: JevAnalysis['boxes'] = []): string {
@@ -261,9 +293,17 @@ export function renderPage(r: Report, p: ReportPage): string {
   const jevPanel = p.jev
     ? `<div class="panel"><h2>Jev visual linking</h2><ul><li>Visible change: ${Math.round(p.jev.changed * 100)}% likely</li><li>Likely source: ${p.jev.choice ? `<code>${esc(p.jev.choice.file)}</code> (${Math.round(p.jev.choice.confidence * 100)}% confidence)` : 'not identified'}</li><li>${p.jev.boxes.length} highlighted area${p.jev.boxes.length === 1 ? '' : 's'} on the after screenshot (purple)</li></ul></div>`
     : '';
+  const sharedPanel = p.shared?.length
+    ? `<div class="panel"><h2>Shared change</h2><ul>${p.shared.map((id) => `<li>The same change shows on ${r.shared?.[id]?.pages.length ?? 0} pages. <a href="../index.html">See the group</a></li>`).join('')}</ul></div>`
+    : '';
+  const notes = [
+    p.unstable ? `${p.unstable} area${p.unstable === 1 ? '' : 's'} ignored: ${p.unstable === 1 ? 'it differs' : 'they differ'} between two loads of the same commit.` : '',
+    p.blockedWrites ? `${p.blockedWrites} Convex write${p.blockedWrites === 1 ? ' was' : 's were'} blocked while capturing.` : '',
+  ].filter(Boolean);
+  const notesPanel = notes.length ? `<div class="panel"><h2>Notes</h2><ul>${notes.map((n) => `<li>${esc(n)}</li>`).join('')}</ul></div>` : '';
   const errors = p.errors.length ? `<div class="panel"><h2>Errors after the change</h2><ul>${p.errors.map((e) => `<li><code>${esc(e)}</code></li>`).join('')}</ul></div>` : '';
   const header = `<header><h1><a href="../index.html">&larr;</a> ${esc(p.path)}</h1>${commitLine(r)}<div class="chips">${badge(p.status)}<span class="muted">${esc(p.reason)}</span></div></header>`;
-  return doc(`${p.path} - Redline`, `${header}<main>${toolbar}${sides}${slider}${suspects}${jevPanel}${errors}</main>`, both ? SLIDER_JS : '');
+  return doc(`${p.path} - Redline`, `${header}<main>${toolbar}${sides}${slider}${sharedPanel}${suspects}${jevPanel}${notesPanel}${errors}</main>`, both ? SLIDER_JS : '');
 }
 
 /** Write `report.json`, `index.html` and one `pages/<id>.html` per page. Images must already be under `outDir`. */
