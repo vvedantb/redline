@@ -9,11 +9,14 @@ import { parseEnvText } from '../env';
 import { analyzeRoutePair, createJevClient, JEV_SKIPPED_NOTICE, mockJevFetch, type JevAnalysis, type JevCandidate, type JevClient } from '../jev';
 import { resolveCommit } from '../server';
 import { affectedRoutes, type AffectedRoute, type AffectedRoutesResult, type Framework } from '../routes/affected';
-import { capRoutes, DEFAULT_MAX_ROUTES, discoverRoutes, patternFor, type DiscoveredRoute, type RouteOrigin } from '../routes/discover';
+import { capRoutes, DEFAULT_CONCURRENCY, DEFAULT_MAX_ROUTES, discoverRoutes, patternFor, type DiscoveredRoute, type RouteOrigin, type RoutePath } from '../routes/discover';
 import type { BuildFramework } from '../types';
-import { capturePage, DEFAULT_VIEWPORT, launchBrowser, stableContext, type BrowserOptions, type PageCapture, type Viewport } from './capture';
+import { capturePage, CONVEX_WRITE_GUARD, DEFAULT_VIEWPORT, launchBrowser, stableContext, type BrowserOptions, type PageCapture, type Viewport } from './capture';
+import { startDevServer } from './devserver';
+import { groupSharedChanges } from './groups';
+import { mapPool } from './pool';
 import { BLANK_BOTH, classify, rankPages, type PageStatus } from './classify';
-import { diffImages, type Region } from './pixels';
+import { diffImages, overlaps, regionHashes, type Region } from './pixels';
 import { buildRouteChanges } from './routechanges';
 import { writeReport, type CommitRef, type PageShot, type Report, type ReportFileDiff, type ReportPage } from './report';
 
@@ -44,9 +47,31 @@ export interface CompareOptions {
   network?: NetworkPolicy;
   /** Signs in before pages are found. A function, or a module path whose default export is one. */
   auth?: LoginHook | string;
+  /** Hooks, or a module path that exports them: `login` and `routePath`. */
+  hooks?: CompareHooks | string;
+  /** `build` serves production builds. `dev` runs each commit's dev server in turn. Default `build`. */
+  serve?: ServeMode;
+  /** Pages loaded at once. Default 4. */
+  concurrency?: number;
+  /** CSS selectors painted over in every screenshot, such as clocks and live counters. */
+  mask?: string[];
+  /** CSS selectors hidden in every screenshot, such as dev-only toolbars. */
+  hide?: string[];
+  /** Drop Convex mutations and actions sent by captured pages. */
+  blockConvexWrites?: boolean;
 }
 
 export type NetworkPolicy = 'read-only' | 'live';
+export type ServeMode = 'build' | 'dev';
+
+export interface CompareHooks {
+  login?: LoginHook;
+  /**
+   * The path the router matches for a URL path, for apps that rewrite URLs. Used only to match
+   * pages to route files; pages are still loaded at their own URL.
+   */
+  routePath?: RoutePath;
+}
 
 export interface LoginContext {
   /** A page in the capture browser. Cookies and storage it sets are kept for every capture. */
@@ -76,6 +101,13 @@ export interface RedlineConfig {
   network?: NetworkPolicy;
   /** Module, relative to the app directory, whose default export is a `LoginHook`. */
   auth?: string;
+  /** Module, relative to the app directory, exporting `login` and `routePath`. */
+  hooks?: string;
+  serve?: ServeMode;
+  concurrency?: number;
+  mask?: string[];
+  hide?: string[];
+  blockConvexWrites?: boolean;
 }
 
 export const CONFIG_FILE = 'redline.config.json';
@@ -173,12 +205,28 @@ function readEnvFile(root: string, file: string | undefined): Record<string, str
   return parseEnvText(fs.readFileSync(abs, 'utf8'));
 }
 
-async function loadLoginHook(root: string, auth: LoginHook | string | undefined): Promise<LoginHook | null> {
-  if (!auth) return null;
-  if (typeof auth === 'function') return auth;
-  const mod: { default?: unknown } = await import(pathToFileURL(path.resolve(root, auth)).href);
-  if (typeof mod.default !== 'function') throw new Error(`auth module ${auth} has no default export function.`);
-  return mod.default as LoginHook;
+async function importModule(root: string, file: string): Promise<Record<string, unknown>> {
+  return import(pathToFileURL(path.resolve(root, file)).href);
+}
+
+/** `hooks` (a module or object) plus the older `auth` default export. `auth` wins for `login`. */
+async function loadHooks(root: string, hooks: CompareHooks | string | undefined, auth: LoginHook | string | undefined): Promise<CompareHooks> {
+  const out: CompareHooks = {};
+  if (typeof hooks === 'string') {
+    const mod = await importModule(root, hooks);
+    if (typeof mod.login === 'function') out.login = mod.login as LoginHook;
+    if (typeof mod.routePath === 'function') out.routePath = mod.routePath as RoutePath;
+    if (!out.login && !out.routePath) throw new Error(`hooks module ${hooks} exports neither login nor routePath.`);
+  } else if (hooks) {
+    Object.assign(out, hooks);
+  }
+  if (typeof auth === 'function') out.login = auth;
+  else if (auth) {
+    const mod = await importModule(root, auth);
+    if (typeof mod.default !== 'function') throw new Error(`auth module ${auth} has no default export function.`);
+    out.login = mod.default as LoginHook;
+  }
+  return out;
 }
 
 /** Run the login hook once per commit, in the shared capture context. */
@@ -207,10 +255,35 @@ function clearOut(outDir: string): void {
   fs.mkdirSync(path.join(outDir, 'images'), { recursive: true });
 }
 
+interface Served {
+  /** Where the commit is served, no trailing slash. */
+  url: string;
+  close: () => Promise<void>;
+}
+
+/** Load `/` once with a long timeout, so a dev server compiles before timed captures start. */
+async function warmUp(context: BrowserContext, url: string): Promise<void> {
+  const page = await context.newPage();
+  try {
+    await page.goto(url + '/', { waitUntil: 'networkidle', timeout: 180_000 });
+  } catch {
+    // Captures report the failure page by page.
+  } finally {
+    await page.close().catch(() => undefined);
+  }
+}
+
+/** Region keys for grouping: the box plus the pixels before and after. */
+function regionKeys(before: string, after: string, regions: Region[]): string[] {
+  const b = regionHashes(fs.readFileSync(before), regions);
+  const a = regionHashes(fs.readFileSync(after), regions);
+  return regions.map((r, i) => `${r.x},${r.y},${r.width},${r.height}:${b[i]}:${a[i]}`);
+}
+
 /**
- * Build `base` and `head`, find the app's pages, screenshot each page at both commits, and write a
- * static report of what changed. Builds reuse the History build engine and are cached by commit
- * under `<root>/.redline`.
+ * Build `base` and `head` (or run their dev servers), find the app's pages, screenshot each page
+ * at both commits, and write a static report of what changed. Builds reuse the History build
+ * engine and are cached by commit under `<root>/.redline`.
  */
 export async function compare(options: CompareOptions = {}): Promise<CompareResult> {
   const log = options.log ?? (() => undefined);
@@ -224,7 +297,12 @@ export async function compare(options: CompareOptions = {}): Promise<CompareResu
   const outDir = path.resolve(options.out ?? path.join(root, '.redline', 'report'));
   const env = readEnvFile(root, options.envFile ?? config.envFile);
   const network = options.network ?? config.network ?? 'read-only';
-  const login = await loadLoginHook(root, options.auth ?? config.auth);
+  const { login, routePath } = await loadHooks(root, options.hooks ?? config.hooks, options.auth ?? config.auth);
+  const serve = options.serve ?? config.serve ?? 'build';
+  const concurrency = Math.max(1, options.concurrency ?? config.concurrency ?? DEFAULT_CONCURRENCY);
+  const mask = [...(config.mask ?? []), ...(options.mask ?? [])];
+  const hide = [...(config.hide ?? []), ...(options.hide ?? [])];
+  const blockConvexWrites = options.blockConvexWrites ?? config.blockConvexWrites ?? false;
 
   const baseRefName = options.base ?? 'HEAD~1';
   const headRefName = options.head ?? 'HEAD';
@@ -246,34 +324,63 @@ export async function compare(options: CompareOptions = {}): Promise<CompareResu
   const builds = new BuildManager({ root, framework: buildFramework(framework), capture: false, maxReady: 10, env });
   const closers: (() => Promise<void>)[] = [];
   try {
-    for (const sha of [baseSha, headSha]) {
-      const job = builds.enqueue(sha);
-      if (job.status !== 'ready') log(`Building ${sha.slice(0, 7)}...`);
-    }
-    await builds.whenIdle();
-    for (const sha of [baseSha, headSha]) {
-      const job = builds.get(sha);
-      if (job?.status !== 'ready') {
-        throw new Error(`Build of ${sha.slice(0, 7)} failed: ${job?.error ?? 'unknown error'}\n${(job?.logTail ?? []).join('\n')}`);
+    if (serve === 'build') {
+      for (const sha of [baseSha, headSha]) {
+        const job = builds.enqueue(sha);
+        if (job.status !== 'ready') log(`Building ${sha.slice(0, 7)}...`);
+      }
+      await builds.whenIdle();
+      for (const sha of [baseSha, headSha]) {
+        const job = builds.get(sha);
+        if (job?.status !== 'ready') {
+          throw new Error(`Build of ${sha.slice(0, 7)} failed: ${job?.error ?? 'unknown error'}\n${(job?.logTail ?? []).join('\n')}`);
+        }
       }
     }
-    const basePreview = await builds.preview(baseSha);
-    closers.push(basePreview.close);
-    const headPreview = await builds.preview(headSha);
-    closers.push(headPreview.close);
-    const basePrefix = basePreview.url.replace(/\/$/, '');
-    const headPrefix = headPreview.url.replace(/\/$/, '');
 
     const browser = await launchBrowser(root, options.browser);
     closers.push(() => browser.close());
     const context = await stableContext(browser, viewport, login ? new Date() : undefined);
     if (network === 'live') await context.addInitScript('window.__redlineNetworkLive = true;');
-    if (login) await signIn(context, login, [['base', basePrefix], ['head', headPrefix]], log);
+    if (blockConvexWrites) await context.addInitScript(CONVEX_WRITE_GUARD);
+
+    /** Serve one commit and sign in. Dev servers log to `.redline/dev/<sha>.log`. */
+    const open = async (sha: string, side: LoginContext['side']): Promise<Served> => {
+      let served: Served;
+      if (serve === 'dev') {
+        const logFile = path.join(root, '.redline', 'dev', `${sha}.log`);
+        fs.mkdirSync(path.dirname(logFile), { recursive: true });
+        fs.writeFileSync(logFile, '');
+        const devLog = (text: string) => fs.appendFileSync(logFile, text);
+        log(`Starting the dev server for ${sha.slice(0, 7)}...`);
+        const worktree = await builds.devWorktree(sha, devLog);
+        try {
+          const server = await startDevServer({ dir: worktree.dir, framework: buildFramework(framework), env: { ...process.env, ...env, REDLINE: '0', BROWSER: 'none' }, log: devLog });
+          served = { url: server.url, close: async () => { await server.close(); worktree.remove(); } };
+        } catch (err) {
+          worktree.remove();
+          throw new Error(`${err instanceof Error ? err.message : String(err)} See ${logFile}.`);
+        }
+        await warmUp(context, served.url);
+      } else {
+        const preview = await builds.preview(sha);
+        served = { url: preview.url.replace(/\/$/, ''), close: preview.close };
+      }
+      closers.push(served.close);
+      if (login) await signIn(context, login, [[side, served.url]], log);
+      return served;
+    };
+
+    // `build`: both commits stay up for the whole run. `dev`: one dev server at a time, base
+    // first, so head's pages are found from its route files and seeds rather than a crawl.
+    const baseServed = await open(baseSha, 'base');
+    let headServed = serve === 'build' ? await open(headSha, 'head') : null;
 
     log('Finding pages...');
+    const discover = { seeds, maxRoutes: Infinity, framework, context, routePath, concurrency };
     const [before, after] = await Promise.all([
-      discoverRoutes({ root: baseTree, baseUrl: basePrefix, seeds, maxRoutes: Infinity, framework, context }),
-      discoverRoutes({ root: headTree, baseUrl: headPrefix, seeds, maxRoutes: Infinity, framework, context }),
+      discoverRoutes({ ...discover, root: baseTree, baseUrl: baseServed.url }),
+      discoverRoutes({ ...discover, root: headTree, baseUrl: headServed?.url }),
     ]);
     const merged = new Map<string, Set<RouteOrigin>>();
     for (const r of [...before.routes, ...after.routes]) {
@@ -283,32 +390,59 @@ export async function compare(options: CompareOptions = {}): Promise<CompareResu
     const patterns = [...new Set([...after.patterns, ...before.patterns])];
     const all: DiscoveredRoute[] = [...merged].map(([p, from]) => ({
       path: p,
-      pattern: patternFor(p, after.patterns) ?? patternFor(p, before.patterns),
+      pattern: patternFor(p, after.patterns, routePath) ?? patternFor(p, before.patterns, routePath),
       from: [...from].sort(),
     }));
     const { routes, skipped } = capRoutes(all, maxRoutes, patterns);
-    log(`Capturing ${routes.length} page(s) at both commits...`);
 
     clearOut(outDir);
+    const images = path.join(outDir, 'images');
+    const shotFile = (i: number, side: string) => path.join(images, `${String(i).padStart(3, '0')}-${side}.png`);
+    log(`Capturing ${routes.length} page(s) at both commits, ${concurrency} at a time...`);
+    const capture = (served: Served, side: string) =>
+      mapPool(routes, concurrency, (route, i) => capturePage(context, served.url, route.path, shotFile(i, side), { mask, hide }));
+    const befores = await capture(baseServed, 'before');
+    if (!headServed) {
+      await baseServed.close();
+      headServed = await open(headSha, 'head');
+    }
+    const afters = await capture(headServed, 'after');
+
+    // Diff, then load each changed page at head once more: areas that also differ between two
+    // loads of the same commit are live data or timing, not the change.
+    const servedHead = headServed;
+    const diffs = await mapPool(routes, concurrency, async (route, i) => {
+      const b = befores[i];
+      const a = afters[i];
+      if (!b.image || !a.image || b.failed || a.failed) return { regions: [] as Region[], changedRatio: 0, unstable: 0 };
+      const d = diffImages(fs.readFileSync(b.image), fs.readFileSync(a.image), { minArea: options.minArea });
+      if (!d.regions.length) return { regions: d.regions, changedRatio: d.changedRatio, unstable: 0 };
+      const again = await capturePage(context, servedHead.url, route.path, shotFile(i, 'recheck'), { mask, hide });
+      let noise: Region[] = [];
+      if (again.image && !again.failed) {
+        noise = diffImages(fs.readFileSync(a.image), fs.readFileSync(again.image), { minArea: options.minArea }).regions;
+        fs.rmSync(again.image, { force: true });
+      }
+      const regions = d.regions.filter((r) => !noise.some((n) => overlaps(r, n)));
+      return { regions, changedRatio: regions.length ? d.changedRatio : 0, unstable: d.regions.length - regions.length };
+    });
+
     const jev = jevClient(options);
     const notices: string[] = [];
     if (!jev) notices.push(JEV_SKIPPED_NOTICE);
-    const images = path.join(outDir, 'images');
     const pages: Omit<ReportPage, 'id'>[] = [];
+    const keysByPath = new Map<string, string[]>();
     for (const [i, route] of routes.entries()) {
-      const name = String(i).padStart(3, '0');
-      const b = await capturePage(context, basePrefix, route.path, path.join(images, `${name}-before.png`));
-      const a = await capturePage(context, headPrefix, route.path, path.join(images, `${name}-after.png`));
-      const inBase = patternFor(route.path, before.patterns) !== null;
-      const inHead = patternFor(route.path, after.patterns) !== null;
-      let regions: Region[] = [];
-      let changedRatio = 0;
-      if (b.image && a.image && !b.failed && !a.failed) {
-        const d = diffImages(fs.readFileSync(b.image), fs.readFileSync(a.image), { minArea: options.minArea });
-        regions = d.regions;
-        changedRatio = d.changedRatio;
-      }
-      const { status, reason } = classify({ before: b, after: a, regions, inBase, inHead });
+      const b = befores[i];
+      const a = afters[i];
+      const { regions, changedRatio, unstable } = diffs[i];
+      const inBase = patternFor(route.path, before.patterns, routePath) !== null;
+      const inHead = patternFor(route.path, after.patterns, routePath) !== null;
+      const classified = classify({ before: b, after: a, regions, inBase, inHead });
+      const { status } = classified;
+      const reason = status === 'unchanged' && unstable
+        ? `Only areas that differ between two loads of the same commit changed (${unstable})`
+        : classified.reason;
       const keepRegions = status === 'changed' || status === 'broken';
       const suspects = suspectsFor(route.pattern, affected);
       let analysis: JevAnalysis | undefined;
@@ -319,6 +453,7 @@ export async function compare(options: CompareOptions = {}): Promise<CompareResu
           notices.push(`Jev visual linking failed for ${route.path}: ${err instanceof Error ? err.message : String(err)}`);
         }
       }
+      if (status === 'changed' && b.image && a.image) keysByPath.set(route.path, regionKeys(b.image, a.image, regions));
       pages.push({
         path: route.path,
         pattern: route.pattern,
@@ -331,6 +466,8 @@ export async function compare(options: CompareOptions = {}): Promise<CompareResu
         regions: keepRegions ? regions : [],
         changedRatio: keepRegions ? changedRatio : 0,
         errors: status === 'removed' ? [] : [...new Set([...a.errors, ...a.consoleErrors].filter((e) => !b.errors.includes(e) && !b.consoleErrors.includes(e)))],
+        ...(unstable ? { unstable } : {}),
+        ...(a.blockedWrites ? { blockedWrites: a.blockedWrites } : {}),
       });
       log(`  ${status.padEnd(9)} ${route.path}`);
     }
@@ -338,12 +475,20 @@ export async function compare(options: CompareOptions = {}): Promise<CompareResu
       pages.push({ path: s.route, pattern: s.route, status: 'skipped', reason: `Not captured: ${s.reason}`, suspects: suspectsFor(s.route, affected), before: null, after: null, regions: [], changedRatio: 0, errors: [] });
     }
 
-    const ranked = rankPages(pages).map((p, id) => ({ id, ...p }));
+    const ranked: ReportPage[] = rankPages(pages).map((p, id) => ({ id, ...p }));
+    const shared = groupSharedChanges(
+      ranked.filter((p) => keysByPath.has(p.path)).map((p) => ({ id: p.id, regions: p.regions, suspects: p.suspects, regionKeys: keysByPath.get(p.path)! })),
+    );
+    for (const g of shared) for (const id of g.pages) (ranked[id].shared ??= []).push(g.id);
     const summary = Object.fromEntries((['broken', 'changed', 'added', 'removed', 'skipped', 'unchanged'] as PageStatus[]).map((s) => [s, ranked.filter((p) => p.status === s).length])) as Report['summary'];
     const overCap = skipped.filter((s) => s.reason.startsWith('over')).length;
     if (overCap) notices.push(`${overCap} page(s) were not captured because of the ${maxRoutes}-page limit. Raise it with --max-routes.`);
     if (routes.length && pages.filter((p) => p.reason === BLANK_BOTH).length === routes.length) {
       notices.push('Every page was blank at both commits. Builds run without secret and Convex env keys, so an app that needs them to start renders nothing.');
+    }
+    const unstablePages = ranked.filter((p) => p.unstable);
+    if (unstablePages.length) {
+      notices.push(`${unstablePages.reduce((n, p) => n + (p.unstable ?? 0), 0)} area(s) on ${unstablePages.length} page(s) differed between two loads of the same commit and were ignored. List their selectors under "mask" to hide them.`);
     }
     if (affected.limits.filesCapped) notices.push(`Only the first ${affected.limits.fileCap} source files were scanned, so "Likely from" may miss some files.`);
     if (affected.limits.depthCapped) notices.push(`Imports more than ${affected.limits.depthCap} files deep were not followed, so "Likely from" may miss some pages.`);
@@ -356,6 +501,7 @@ export async function compare(options: CompareOptions = {}): Promise<CompareResu
       head,
       pages: ranked,
       summary,
+      shared,
       notices,
       changedFiles: changed,
       deletedFiles: deleted,

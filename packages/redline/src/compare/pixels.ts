@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import pixelmatch from 'pixelmatch';
 import { PNG } from 'pngjs';
 
@@ -46,7 +47,7 @@ function pad(img: PNG, width: number, height: number): Buffer {
   return out;
 }
 
-function overlaps(a: Box, b: Box): boolean {
+export function overlaps(a: Box, b: Box): boolean {
   return a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
 }
 
@@ -145,4 +146,18 @@ export function diffImages(before: Buffer, after: Buffer, options: PixelDiffOpti
     }
   }
   return { width, height, changedPixels, changedRatio: changedPixels / (width * height), regions: regionsFromMask(mask, width, height, options) };
+}
+
+/** Hash of the pixels inside each box, clipped to the image. Equal hashes mean the same pixels. */
+export function regionHashes(png: Buffer, boxes: Box[]): string[] {
+  const img = PNG.sync.read(png);
+  return boxes.map((box) => {
+    const hash = createHash('sha1');
+    const x0 = Math.max(0, box.x);
+    const x1 = Math.min(img.width, box.x + box.width);
+    for (let y = Math.max(0, box.y); y < Math.min(img.height, box.y + box.height); y++) {
+      if (x1 > x0) hash.update(img.data.subarray((y * img.width + x0) * 4, (y * img.width + x1) * 4));
+    }
+    return hash.digest('hex').slice(0, 16);
+  });
 }

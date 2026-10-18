@@ -120,6 +120,7 @@ const page = (over: Partial<PageCapture> = {}): PageCapture => ({
   notFound: false,
   content: 100,
   links: [],
+  blockedWrites: 0,
   ...over,
 });
 const box = { x: 0, y: 0, width: 10, height: 10, pixels: 50 };

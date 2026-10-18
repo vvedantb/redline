@@ -137,9 +137,9 @@ export interface CopiedEnvFile {
 /**
  * Copy env files from `from` to `to`, filtered to allowlisted public keys (see `env.ts`).
  * Files that exist in `to` (for example committed at that commit) are kept. Returns what was
- * copied. Missing env files are fine.
+ * copied. Missing env files are fine. `filter: false` copies them whole, for a local dev server.
  */
-export function copyEnvFiles(from: string, to: string): CopiedEnvFile[] {
+export function copyEnvFiles(from: string, to: string, filter = true): CopiedEnvFile[] {
   let names: string[];
   try {
     names = fs.readdirSync(from);
@@ -152,9 +152,10 @@ export function copyEnvFiles(from: string, to: string): CopiedEnvFile[] {
     const dest = path.join(to, name);
     try {
       if (!fs.statSync(src).isFile() || fs.existsSync(dest)) continue;
-      const { text, kept, stripped } = filterEnvText(fs.readFileSync(src, 'utf8'));
-      fs.writeFileSync(dest, text);
-      copied.push({ name, kept, stripped });
+      const raw = fs.readFileSync(src, 'utf8');
+      const { text, kept, stripped } = filterEnvText(raw);
+      fs.writeFileSync(dest, filter ? text : raw);
+      copied.push({ name, kept: filter ? kept : kept + stripped, stripped: filter ? stripped : 0 });
     } catch {
       // Unreadable or vanished: skip it.
     }

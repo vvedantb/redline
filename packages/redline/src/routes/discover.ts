@@ -1,8 +1,9 @@
 import type { BrowserContext } from 'playwright-core';
 import { capturePage, launchBrowser, stableContext, type BrowserOptions } from '../compare/capture';
+import { mapPool } from '../compare/pool';
 import { isDynamicRoute, routeEntries, type Framework } from './affected';
 
-export type RouteOrigin = 'file' | 'link' | 'sitemap' | 'seed';
+export type RouteOrigin = 'file' | 'link' | 'sitemap' | 'seed' | 'derived';
 
 export interface DiscoveredRoute {
   /** Concrete app path, e.g. `/blog/hello`. */
@@ -31,7 +32,16 @@ export interface DiscoverOptions {
   browser?: BrowserOptions;
   /** Reuse an open browser context instead of launching one. */
   context?: BrowserContext;
+  /** Maps a URL path to the path the router matches, for apps that rewrite URLs. Default: unchanged. */
+  routePath?: RoutePath;
+  /** Pages the link crawl loads at most. Default 150. */
+  crawlBudget?: number;
+  /** Pages the crawl loads at once. Default 4. */
+  concurrency?: number;
 }
+
+export type RoutePath = (appPath: string) => string;
+const same: RoutePath = (p) => p;
 
 export interface DiscoverResult {
   routes: DiscoveredRoute[];
@@ -41,7 +51,10 @@ export interface DiscoverResult {
 }
 
 export const DEFAULT_MAX_ROUTES = 50;
-const CRAWL_DEPTH = 2;
+/** Link hops from `/`. Hops past the second follow only one page per dynamic route. */
+const CRAWL_DEPTH = 4;
+export const DEFAULT_CRAWL_BUDGET = 150;
+export const DEFAULT_CONCURRENCY = 4;
 
 function segmentRegex(seg: string): string {
   let m: RegExpMatchArray | null;
@@ -60,7 +73,8 @@ export function matchPattern(pattern: string, appPath: string): boolean {
 }
 
 /** The pattern that best describes `appPath`: an exact static route first, then the most specific dynamic one. */
-export function patternFor(appPath: string, patterns: string[]): string | null {
+export function patternFor(appPath: string, patterns: string[], routePath: RoutePath = same): string | null {
+  appPath = normalize(routePath(appPath));
   if (patterns.includes(appPath)) return appPath;
   const matches = patterns.filter((p) => isDynamicRoute(p) && matchPattern(p, appPath));
   const score = (p: string) => p.split('/').filter((s) => s && !/[[\]:*]/.test(s)).length * 10 - (p.includes('...') ? 5 : 0);
@@ -107,25 +121,73 @@ async function fetchSitemap(baseUrl: string): Promise<string[]> {
   }
 }
 
-/** Same-origin links reachable from `/` within two clicks. */
-async function crawl(context: BrowserContext, baseUrl: string, limit: number): Promise<string[]> {
+interface CrawlOptions {
+  patterns: string[];
+  routePath: RoutePath;
+  budget: number;
+  concurrency: number;
+}
+
+/**
+ * Same-origin links reachable from `/`. The first two hops load every page found. Later hops load
+ * only the first page of each dynamic route, so lists lead to one example of each detail page
+ * without loading every row. Stops after `budget` page loads.
+ */
+async function crawl(context: BrowserContext, baseUrl: string, { patterns, routePath, budget, concurrency }: CrawlOptions): Promise<string[]> {
   const prefix = baseUrl.replace(/\/$/, '');
   const found = new Set<string>(['/']);
+  const followed = new Set<string>();
+  let loads = 0;
   let frontier = ['/'];
-  for (let depth = 1; depth <= CRAWL_DEPTH && frontier.length && found.size < limit; depth++) {
+  for (let depth = 0; depth < CRAWL_DEPTH && frontier.length && loads < budget; depth++) {
+    const batch = frontier.slice(0, budget - loads);
+    loads += batch.length;
+    const pages = await mapPool(batch, concurrency, (p) => capturePage(context, prefix, p));
     const next: string[] = [];
-    for (const p of frontier) {
-      if (found.size >= limit) break;
-      const page = await capturePage(context, prefix, p);
-      for (const link of page.links) {
-        if (found.has(link)) continue;
-        found.add(link);
-        next.push(link);
+    for (const link of pages.flatMap((page) => page.links)) {
+      if (found.has(link)) continue;
+      found.add(link);
+      const pattern = patternFor(link, patterns, routePath);
+      if (depth >= 1 && pattern && isDynamicRoute(pattern)) {
+        if (followed.has(pattern)) continue;
+        followed.add(pattern);
       }
+      next.push(link);
     }
-    frontier = depth < CRAWL_DEPTH ? next : [];
+    frontier = next;
   }
   return [...found];
+}
+
+/**
+ * Example URLs for dynamic routes that nothing linked to, built from ones that were found: when
+ * `/[owner]/[repo]/sessions/[id]` has `/acme/app/sessions/7`, then
+ * `/[owner]/[repo]/sessions/[id]/review` gets `/acme/app/sessions/7/review`. Only static segments
+ * are appended, and each result must match its pattern. Tabs and sub-pages reached by buttons
+ * rather than links are covered this way.
+ */
+export function deriveExamples(found: Iterable<string>, patterns: string[], routePath: RoutePath = same): Map<string, string> {
+  const example = new Map<string, string>();
+  for (const p of found) {
+    const pattern = patternFor(p, patterns, routePath);
+    if (pattern && !example.has(pattern)) example.set(pattern, p);
+  }
+  const derived = new Map<string, string>();
+  const segs = (p: string) => p.split('/').filter(Boolean);
+  for (const target of patterns) {
+    if (!isDynamicRoute(target) || example.has(target)) continue;
+    const t = segs(target);
+    let best: { url: string; depth: number } | null = null;
+    for (const [pattern, url] of example) {
+      const s = segs(pattern);
+      if (s.length >= t.length || s.some((seg, i) => seg !== t[i])) continue;
+      const rest = t.slice(s.length);
+      if (rest.some((seg) => isDynamicRoute('/' + seg))) continue;
+      if (!best || s.length > best.depth) best = { url: `${url.replace(/\/$/, '')}/${rest.join('/')}`, depth: s.length };
+    }
+    if (best && patternFor(best.url, patterns, routePath) === target) derived.set(target, best.url);
+  }
+  return derived;
 }
 
 /**
@@ -141,6 +203,7 @@ export async function discoverRoutes(options: DiscoverOptions): Promise<Discover
     const key = normalize(p);
     (found.get(key) ?? found.set(key, new Set()).get(key)!).add(from);
   };
+  const routePath = options.routePath ?? same;
   for (const s of options.seeds ?? []) add(s, 'seed');
   for (const p of patterns) if (!isDynamicRoute(p)) add(p, 'file');
 
@@ -150,23 +213,33 @@ export async function discoverRoutes(options: DiscoverOptions): Promise<Discover
     const browser = context ? null : await launchBrowser(options.root, options.browser);
     try {
       context ??= await stableContext(browser!);
-      for (const p of await crawl(context, options.baseUrl, maxRoutes * 2)) add(p, 'link');
+      const crawlOptions = { patterns, routePath, budget: options.crawlBudget ?? DEFAULT_CRAWL_BUDGET, concurrency: options.concurrency ?? DEFAULT_CONCURRENCY };
+      for (const p of await crawl(context, options.baseUrl, crawlOptions)) add(p, 'link');
     } finally {
       await browser?.close();
     }
   }
 
-  const all = [...found.entries()].map(([p, from]) => ({ path: p, pattern: patternFor(p, patterns), from: [...from].sort() as RouteOrigin[] }));
+  for (const url of deriveExamples(found.keys(), patterns, routePath).values()) add(url, 'derived');
+  const all = [...found.entries()].map(([p, from]) => ({ path: p, pattern: patternFor(p, patterns, routePath), from: [...from].sort() as RouteOrigin[] }));
   return { ...capRoutes(all, maxRoutes, patterns), patterns };
 }
 
 /**
- * Order routes (seeds, then `/`, then shorter paths) and keep `maxRoutes`. Dynamic patterns that no
- * route covers come back as skipped, and so does everything over the cap.
+ * Order routes (seeds, then `/`, then shorter paths) and keep `maxRoutes`. A dynamic route keeps one
+ * example besides seeds: a second blog post rarely shows anything the first did not. Dynamic
+ * patterns that no route covers come back as skipped, and so does everything over the cap.
  */
 export function capRoutes(routes: DiscoveredRoute[], maxRoutes: number, patterns: string[] = []): { routes: DiscoveredRoute[]; skipped: SkippedRoute[] } {
   const rank = (r: DiscoveredRoute) => (r.from.includes('seed') ? 0 : r.path === '/' ? 1 : 2);
-  const ordered = [...routes].sort((a, b) => rank(a) - rank(b) || a.path.split('/').length - b.path.split('/').length || a.path.localeCompare(b.path));
+  const sorted = [...routes].sort((a, b) => rank(a) - rank(b) || a.path.split('/').length - b.path.split('/').length || a.path.localeCompare(b.path));
+  const examples = new Set<string>();
+  const ordered = sorted.filter((r) => {
+    if (r.from.includes('seed') || !r.pattern || !isDynamicRoute(r.pattern)) return true;
+    if (examples.has(r.pattern)) return false;
+    examples.add(r.pattern);
+    return true;
+  });
   const kept = ordered.slice(0, maxRoutes);
   const skipped: SkippedRoute[] = ordered.slice(maxRoutes).map((r) => ({ route: r.path, reason: `over the ${maxRoutes}-route limit` }));
   for (const p of patterns) {
