@@ -124,6 +124,14 @@ describe('snapshot config', () => {
     expect(fs.existsSync(path.join(dir, `${USER_CONFIG_BASENAME}.ts`))).toBe(true);
   });
 
+  it('dev mode sets only the tracing and Turbopack roots', () => {
+    const dir = tmp();
+    write(path.join(dir, 'next.config.mjs'), `export default { basePath: '/app', distDir: 'build', turbopack: { rules: { '*.svg': ['svgr'] } } };`);
+    const config = loadEsmConfig(writeSnapshotConfig(dir, { ...overrides, dev: true }));
+    expect(config).toMatchObject({ basePath: '/app', distDir: 'build', outputFileTracingRoot: '/repo', turbopack: { root: '/repo', rules: { '*.svg': ['svgr'] } } });
+    expect('output' in config).toBe(false);
+  });
+
   it('writes a config when the app has none', () => {
     const dir = tmp();
     const wrapper = writeSnapshotConfig(dir, overrides);

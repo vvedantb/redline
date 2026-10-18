@@ -693,6 +693,9 @@ export class BuildManager {
     const dir = await this.addWorktree(sha, p, run, log);
     await this.installDependencies(p, run, log);
     const { top, configDir, rel } = this.layout();
+    // Linked node_modules point at the main tree, outside the worktree. Turbopack refuses them
+    // unless its root contains both, as the snapshot builds set it.
+    if (this.framework === 'next') writeSnapshotConfig(dir, { basePath: '', tracingRoot: top, dev: true });
     const copied = [...copyEnvFiles(top, p.worktree, false), ...(rel ? copyEnvFiles(configDir, dir, false) : [])];
     log(`\n[redline] Copied env files for the dev server: ${copied.map((f) => f.name).join(', ') || 'none'}.\n`);
     return { dir, remove: () => this.removeWorktree(p.worktree, log) };

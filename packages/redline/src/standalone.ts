@@ -54,8 +54,13 @@ export function isNextApp(dir: string): boolean {
 }
 
 export interface SnapshotOverrides {
-  /** `/__redline/h/<sha>`, no trailing slash. */
+  /** `/__redline/h/<sha>`, no trailing slash. Ignored with `dev`. */
   basePath: string;
+  /**
+   * For `next dev` in a compare worktree: set only the tracing and Turbopack roots, so linked
+   * `node_modules` resolve, and keep the user's output, base path and dist dir.
+   */
+  dev?: boolean;
   /** Git top level of the live project. Linked `node_modules` resolve inside it. */
   tracingRoot: string;
 }
@@ -80,7 +85,8 @@ const basePath = ${JSON.stringify(overrides.basePath)};
 const tracingRoot = ${JSON.stringify(overrides.tracingRoot)};
 ${exported} async function redlineSnapshotConfig(phase, ctx) {
   const config = (typeof user === 'function' ? await user(phase, ctx) : await user) || {};
-  const env = { ...config.env };
+${overrides.dev ? `  return { ...config, outputFileTracingRoot: tracingRoot, turbopack: { ...config.turbopack, root: tracingRoot } };
+` : ''}  const env = { ...config.env };
   delete env.NEXT_PUBLIC_REDLINE;
   const result = {
     ...config,
