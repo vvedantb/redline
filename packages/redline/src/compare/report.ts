@@ -5,7 +5,8 @@ import { STATUS_LABELS, type PageStatus } from './classify';
 import type { DiffFile, DiffHunk } from '../types';
 import { DIFF_CSS, DIFF_JS, diffAnchor, renderFileDiff } from './diffview';
 import type { JevAnalysis } from '../jev';
-import type { SharedChange } from './groups';
+import { isOnlyShared, type SharedChange } from './groups';
+import { renderSummary } from './summary';
 import type { Region } from './pixels';
 
 export interface CommitRef {
@@ -206,14 +207,6 @@ function prDiffSection(r: Report): string {
     + `<div id="pr-diff">${r.fileDiffs.map(renderFileDiff).join('')}</div></section>`;
 }
 
-const sameBox = (a: Region, b: Region) => a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height;
-
-/** Every changed area of the page belongs to a shared change, so the group already covers it. */
-function onlyShared(r: Report, p: ReportPage): boolean {
-  const groups = (p.shared ?? []).map((id) => r.shared?.[id]).filter((g): g is SharedChange => !!g);
-  return p.status === 'changed' && groups.length > 0 && p.regions.every((reg) => groups.some((g) => g.regions.some((gr) => sameBox(gr, reg))));
-}
-
 function sharedSection(r: Report): string {
   if (!r.shared?.length) return '';
   const byId = new Map(r.pages.map((p) => [p.id, p]));
@@ -230,7 +223,7 @@ function sharedSection(r: Report): string {
 }
 
 export function renderIndex(r: Report): string {
-  const attention = r.pages.filter((p) => p.status !== 'unchanged' && !onlyShared(r, p));
+  const attention = r.pages.filter((p) => p.status !== 'unchanged' && !isOnlyShared(r.shared, p));
   const unchanged = r.pages.filter((p) => p.status === 'unchanged');
   const chips = (Object.keys(STATUS_LABELS) as PageStatus[])
     .filter((s) => r.summary[s])
@@ -313,5 +306,6 @@ export function writeReport(report: Report, outDir: string): string {
   for (const p of report.pages) fs.writeFileSync(path.join(outDir, 'pages', `${p.id}.html`), renderPage(report, p));
   const index = path.join(outDir, 'index.html');
   fs.writeFileSync(index, renderIndex(report));
+  fs.writeFileSync(path.join(outDir, 'summary.md'), renderSummary(report));
   return index;
 }

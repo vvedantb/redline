@@ -1,14 +1,16 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { BrowserContext, Page } from 'playwright-core';
 import { BuildManager } from '../build';
 import { parseUnifiedDiff } from '../diff';
+import { convexImportArgs } from '../convex';
 import { parseEnvText } from '../env';
 import { analyzeRoutePair, createJevClient, JEV_SKIPPED_NOTICE, mockJevFetch, type JevAnalysis, type JevCandidate, type JevClient } from '../jev';
 import { resolveCommit } from '../server';
-import { affectedRoutes, type AffectedRoute, type AffectedRoutesResult, type Framework } from '../routes/affected';
+import { affectedRoutes, isDynamicRoute, type AffectedRoute, type AffectedRoutesResult, type Framework } from '../routes/affected';
 import { capRoutes, DEFAULT_CONCURRENCY, DEFAULT_MAX_ROUTES, discoverRoutes, patternFor, type DiscoveredRoute, type RouteOrigin, type RoutePath } from '../routes/discover';
 import type { BuildFramework } from '../types';
 import { capturePage, CONVEX_WRITE_GUARD, DEFAULT_VIEWPORT, launchBrowser, stableContext, type BrowserOptions, type PageCapture, type Viewport } from './capture';
@@ -16,7 +18,7 @@ import { startDevServer } from './devserver';
 import { groupSharedChanges } from './groups';
 import { mapPool } from './pool';
 import { BLANK_BOTH, classify, rankPages, type PageStatus } from './classify';
-import { diffImages, overlaps, regionHashes, type Region } from './pixels';
+import { diffImages, dropShifted, overlaps, regionHashes, type Region } from './pixels';
 import { buildRouteChanges } from './routechanges';
 import { writeReport, type CommitRef, type PageShot, type Report, type ReportFileDiff, type ReportPage } from './report';
 
@@ -57,8 +59,32 @@ export interface CompareOptions {
   mask?: string[];
   /** CSS selectors hidden in every screenshot, such as dev-only toolbars. */
   hide?: string[];
+  /** Paths or route patterns never captured, such as sign-in callbacks. */
+  exclude?: string[];
   /** Drop Convex mutations and actions sent by captured pages. */
   blockConvexWrites?: boolean;
+  /** `affected`: capture only pages the changed files reach, plus a sample of the rest. Default `all`. */
+  scope?: CaptureScope;
+  /** With `scope: affected`, other pages captured as a check on the import graph. Default 5. */
+  sample?: number;
+  /** A Convex snapshot imported before capturing, so both commits see the same data. */
+  dataSnapshot?: DataSnapshot;
+  /** Reuse screenshots of a commit from earlier runs with the same settings. Default: on with `dataSnapshot`. */
+  cache?: boolean;
+}
+
+export type CaptureScope = 'all' | 'affected';
+
+export interface DataSnapshot {
+  /** Zip from `redline snapshot` or `npx convex export`, relative to the app directory. */
+  file: string;
+  /** Directory to run `npx convex import` in (where `convex.json` lives). Default: the app directory. */
+  convexDir?: string;
+  /**
+   * `once`: import before pages are found. Enough with `blockConvexWrites`, because pages cannot
+   * change the data. `each`: import before each commit's captures too. Default `once`.
+   */
+  restore?: 'once' | 'each';
 }
 
 export type NetworkPolicy = 'read-only' | 'live';
@@ -107,7 +133,12 @@ export interface RedlineConfig {
   concurrency?: number;
   mask?: string[];
   hide?: string[];
+  exclude?: string[];
   blockConvexWrites?: boolean;
+  scope?: CaptureScope;
+  sample?: number;
+  dataSnapshot?: DataSnapshot;
+  cache?: boolean;
 }
 
 export const CONFIG_FILE = 'redline.config.json';
@@ -255,6 +286,72 @@ function clearOut(outDir: string): void {
   fs.mkdirSync(path.join(outDir, 'images'), { recursive: true });
 }
 
+const DEFAULT_SAMPLE = 5;
+/** Bump when a change to capturing makes old cached screenshots wrong. */
+const CAPTURE_CACHE_VERSION = 6;
+
+function hashOf(value: unknown): string {
+  return createHash('sha256').update(JSON.stringify(value)).digest('hex').slice(0, 16);
+}
+
+function fileStamp(file: string): string {
+  const s = fs.statSync(file);
+  return `${s.size}:${s.mtimeMs}`;
+}
+
+/** `npx convex import --replace --yes` in `convexDir`. Output is kept out of the compare log. */
+function importSnapshot(convexDir: string, file: string): void {
+  const res = spawnSync('npx', ['convex', ...convexImportArgs(file, { replace: true, yes: true, tty: false })], { cwd: convexDir, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  if (res.error || res.status !== 0) {
+    const tail = `${res.stderr ?? ''}${res.stdout ?? ''}`.trim().split('\n').slice(-5).join('\n');
+    throw new Error(`Importing the data snapshot failed. Is the Convex backend running?\n${res.error?.message ?? tail}`);
+  }
+}
+
+function cacheFiles(root: string, sha: string, key: string, appPath: string): { json: string; png: string } {
+  const base = path.join(root, '.redline', 'captures', sha, key, hashOf(appPath));
+  return { json: base + '.json', png: base + '.png' };
+}
+
+/** A capture of `appPath` at `sha` from an earlier run, copied to `file`. */
+export function readCachedCapture(root: string, sha: string, key: string, appPath: string, file: string): PageCapture | null {
+  const { json, png } = cacheFiles(root, sha, key, appPath);
+  if (!fs.existsSync(json)) return null;
+  try {
+    const page = JSON.parse(fs.readFileSync(json, 'utf8')) as PageCapture;
+    if (page.image) fs.copyFileSync(png, file);
+    return { ...page, image: page.image ? file : undefined };
+  } catch {
+    return null;
+  }
+}
+
+/** Keep a capture for later runs. Failed loads are not kept, so they are tried again. */
+export function writeCachedCapture(root: string, sha: string, key: string, appPath: string, page: PageCapture): void {
+  if (page.failed) return;
+  const { json, png } = cacheFiles(root, sha, key, appPath);
+  fs.mkdirSync(path.dirname(json), { recursive: true });
+  if (page.image) fs.copyFileSync(page.image, png);
+  fs.writeFileSync(json, JSON.stringify(page));
+}
+
+/**
+ * Pages the changed files reach, plus a few others as a sample: a change the import graph
+ * cannot see (a global style, a data change) still shows up on one of them.
+ */
+export function scopeToAffected(all: DiscoveredRoute[], patterns: string[], affected: Set<string>, sample: number) {
+  const hit = all.filter((r) => r.pattern && affected.has(r.pattern));
+  const others = capRoutes(all.filter((r) => !hit.includes(r)), sample).routes;
+  return {
+    routes: [...hit, ...others],
+    patterns: patterns.filter((p) => affected.has(p)),
+    sampled: others.length,
+    left: all.length - hit.length - others.length,
+  };
+}
+
+type StorageState = Awaited<ReturnType<BrowserContext['storageState']>>;
+
 interface Served {
   /** Where the commit is served, no trailing slash. */
   url: string;
@@ -302,7 +399,22 @@ export async function compare(options: CompareOptions = {}): Promise<CompareResu
   const concurrency = Math.max(1, options.concurrency ?? config.concurrency ?? DEFAULT_CONCURRENCY);
   const mask = [...(config.mask ?? []), ...(options.mask ?? [])];
   const hide = [...(config.hide ?? []), ...(options.hide ?? [])];
+  const exclude = new Set([...(config.exclude ?? []), ...(options.exclude ?? [])]);
   const blockConvexWrites = options.blockConvexWrites ?? config.blockConvexWrites ?? false;
+  const scope = options.scope ?? config.scope ?? 'all';
+  const sample = options.sample ?? config.sample ?? DEFAULT_SAMPLE;
+  const dataSnapshot = options.dataSnapshot ?? config.dataSnapshot;
+  const wantedSnapshot = dataSnapshot ? path.resolve(root, dataSnapshot.file) : null;
+  // A missing snapshot is a notice, not an error: the run still works on live data.
+  const snapshotFile = wantedSnapshot && fs.existsSync(wantedSnapshot) ? wantedSnapshot : null;
+  const restoreData = (label: string) => {
+    if (!snapshotFile) return;
+    log(`Importing the data snapshot (${label})...`);
+    importSnapshot(path.resolve(root, dataSnapshot?.convexDir ?? '.'), snapshotFile);
+  };
+  const cacheKey = (options.cache ?? config.cache ?? !!snapshotFile)
+    ? hashOf({ v: CAPTURE_CACHE_VERSION, viewport, mask, hide, env, network, blockConvexWrites, login: !!login, serve, snapshot: snapshotFile ? fileStamp(snapshotFile) : null })
+    : null;
 
   const baseRefName = options.base ?? 'HEAD~1';
   const headRefName = options.head ?? 'HEAD';
@@ -340,9 +452,26 @@ export async function compare(options: CompareOptions = {}): Promise<CompareResu
 
     const browser = await launchBrowser(root, options.browser);
     closers.push(() => browser.close());
-    const context = await stableContext(browser, viewport, login ? new Date() : undefined);
-    if (network === 'live') await context.addInitScript('window.__redlineNetworkLive = true;');
-    if (blockConvexWrites) await context.addInitScript(CONVEX_WRITE_GUARD);
+    const now = login ? new Date() : undefined;
+    const newContext = async (state?: StorageState) => {
+      const c = await stableContext(browser, viewport, now, state);
+      if (network === 'live') await c.addInitScript('window.__redlineNetworkLive = true;');
+      if (blockConvexWrites) await c.addInitScript(CONVEX_WRITE_GUARD);
+      return c;
+    };
+    // Sign-in and the crawl share one context. Each capture gets a fresh one with the storage
+    // saved right after sign-in, so what one page writes to localStorage cannot change the next
+    // page, and the result does not depend on the order pages load in.
+    const context = await newContext();
+    let signedIn: StorageState | undefined;
+    const isolated = async (url: string, appPath: string, file: string) => {
+      const c = await newContext(signedIn);
+      try {
+        return await capturePage(c, url, appPath, file, { mask, hide });
+      } finally {
+        await c.close().catch(() => undefined);
+      }
+    };
 
     /** Serve one commit and sign in. Dev servers log to `.redline/dev/<sha>.log`. */
     const open = async (sha: string, side: LoginContext['side']): Promise<Served> => {
@@ -367,7 +496,10 @@ export async function compare(options: CompareOptions = {}): Promise<CompareResu
         served = { url: preview.url.replace(/\/$/, ''), close: preview.close };
       }
       closers.push(served.close);
-      if (login) await signIn(context, login, [[side, served.url]], log);
+      if (login) {
+        await signIn(context, login, [[side, served.url]], log);
+        signedIn = await context.storageState();
+      }
       return served;
     };
 
@@ -376,8 +508,11 @@ export async function compare(options: CompareOptions = {}): Promise<CompareResu
     const baseServed = await open(baseSha, 'base');
     let headServed = serve === 'build' ? await open(headSha, 'head') : null;
 
+    restoreData('before finding pages');
     log('Finding pages...');
-    const discover = { seeds, maxRoutes: Infinity, framework, context, routePath, concurrency };
+    const affectedPatterns = new Set([...affected.routes, ...affected.removed].map((r) => r.route));
+    const targets = scope === 'affected' ? [...affectedPatterns].filter(isDynamicRoute) : undefined;
+    const discover = { seeds, maxRoutes: Infinity, framework, context, routePath, concurrency, targets };
     const [before, after] = await Promise.all([
       discoverRoutes({ ...discover, root: baseTree, baseUrl: baseServed.url }),
       discoverRoutes({ ...discover, root: headTree, baseUrl: headServed?.url }),
@@ -388,25 +523,42 @@ export async function compare(options: CompareOptions = {}): Promise<CompareResu
       r.from.forEach((f) => from.add(f));
     }
     const patterns = [...new Set([...after.patterns, ...before.patterns])];
-    const all: DiscoveredRoute[] = [...merged].map(([p, from]) => ({
-      path: p,
-      pattern: patternFor(p, after.patterns, routePath) ?? patternFor(p, before.patterns, routePath),
-      from: [...from].sort(),
-    }));
-    const { routes, skipped } = capRoutes(all, maxRoutes, patterns);
+    const all: DiscoveredRoute[] = [...merged]
+      .map(([p, from]) => ({
+        path: p,
+        pattern: patternFor(p, after.patterns, routePath) ?? patternFor(p, before.patterns, routePath),
+        from: [...from].sort(),
+      }))
+      .filter((r) => !exclude.has(r.path) && !(r.pattern && exclude.has(r.pattern)));
+    const scoped = scope === 'affected' ? scopeToAffected(all, patterns, affectedPatterns, sample) : null;
+    const { routes, skipped } = capRoutes(scoped?.routes ?? all, maxRoutes, scoped?.patterns ?? patterns);
 
     clearOut(outDir);
     const images = path.join(outDir, 'images');
     const shotFile = (i: number, side: string) => path.join(images, `${String(i).padStart(3, '0')}-${side}.png`);
     log(`Capturing ${routes.length} page(s) at both commits, ${concurrency} at a time...`);
-    const capture = (served: Served, side: string) =>
-      mapPool(routes, concurrency, (route, i) => capturePage(context, served.url, route.path, shotFile(i, side), { mask, hide }));
-    const befores = await capture(baseServed, 'before');
+    let cached = 0;
+    const capture = (served: Served, side: 'before' | 'after', sha: string) =>
+      mapPool(routes, concurrency, async (route, i) => {
+        const file = shotFile(i, side);
+        const hit = cacheKey ? readCachedCapture(root, sha, cacheKey, route.path, file) : null;
+        if (hit) {
+          cached++;
+          return hit;
+        }
+        const page = await isolated(served.url, route.path, file);
+        if (cacheKey) writeCachedCapture(root, sha, cacheKey, route.path, page);
+        return page;
+      });
+    if (snapshotFile && dataSnapshot?.restore === 'each') restoreData('before base captures');
+    const befores = await capture(baseServed, 'before', baseSha);
     if (!headServed) {
       await baseServed.close();
       headServed = await open(headSha, 'head');
     }
-    const afters = await capture(headServed, 'after');
+    if (snapshotFile && dataSnapshot?.restore === 'each') restoreData('before head captures');
+    const afters = await capture(headServed, 'after', headSha);
+    if (cached) log(`Reused ${cached} screenshot(s) from earlier runs.`);
 
     // Diff, then load each changed page at head once more: areas that also differ between two
     // loads of the same commit are live data or timing, not the change.
@@ -415,14 +567,21 @@ export async function compare(options: CompareOptions = {}): Promise<CompareResu
       const b = befores[i];
       const a = afters[i];
       if (!b.image || !a.image || b.failed || a.failed) return { regions: [] as Region[], changedRatio: 0, unstable: 0 };
-      const d = diffImages(fs.readFileSync(b.image), fs.readFileSync(a.image), { minArea: options.minArea });
-      if (!d.regions.length) return { regions: d.regions, changedRatio: d.changedRatio, unstable: 0 };
-      const again = await capturePage(context, servedHead.url, route.path, shotFile(i, 'recheck'), { mask, hide });
+      const beforePng = fs.readFileSync(b.image);
+      const afterPng = fs.readFileSync(a.image);
+      const raw = diffImages(beforePng, afterPng, { minArea: options.minArea });
+      const d = { ...raw, regions: dropShifted(beforePng, afterPng, raw.regions) };
+      if (!d.regions.length) return { regions: d.regions, changedRatio: 0, unstable: 0 };
+      // A recheck that shows much more or less content than the first load caught the page
+      // mid-load. Try once more; if it still looks unfinished, keep every changed area.
+      const settled = (p: PageCapture) => !p.failed && !!p.image && Math.abs(p.content - a.content) <= Math.max(20, a.content * 0.2);
+      let again = await isolated(servedHead.url, route.path, shotFile(i, 'recheck'));
+      if (!settled(again)) again = await isolated(servedHead.url, route.path, shotFile(i, 'recheck'));
       let noise: Region[] = [];
-      if (again.image && !again.failed) {
+      if (settled(again) && again.image) {
         noise = diffImages(fs.readFileSync(a.image), fs.readFileSync(again.image), { minArea: options.minArea }).regions;
-        fs.rmSync(again.image, { force: true });
       }
+      fs.rmSync(shotFile(i, 'recheck'), { force: true });
       const regions = d.regions.filter((r) => !noise.some((n) => overlaps(r, n)));
       return { regions, changedRatio: regions.length ? d.changedRatio : 0, unstable: d.regions.length - regions.length };
     });
@@ -430,6 +589,9 @@ export async function compare(options: CompareOptions = {}): Promise<CompareResu
     const jev = jevClient(options);
     const notices: string[] = [];
     if (!jev) notices.push(JEV_SKIPPED_NOTICE);
+    if (scoped) notices.push(`Only pages the changed files reach were captured, plus ${scoped.sampled} other page(s) as a sample. ${scoped.left} page(s) were left out.`);
+    if (wantedSnapshot && !snapshotFile) notices.push(`The data snapshot ${dataSnapshot!.file} does not exist, so pages showed live data and no screenshots were cached. Make one with \`redline snapshot\`.`);
+    if (cached) notices.push(`${cached} screenshot(s) were reused from earlier runs of the same commits and settings.`);
     const pages: Omit<ReportPage, 'id'>[] = [];
     const keysByPath = new Map<string, string[]>();
     for (const [i, route] of routes.entries()) {

@@ -34,7 +34,7 @@ Click a page for before and after side by side with numbered boxes on the change
 1. **Build both commits.** Each commit is built in its own git worktree with the same engine as the overlay's History builds: `vite build --base /__redline/h/<sha>/`, or `next build` with `output: 'standalone'` and a matching `basePath`. Your working tree is never touched. `node_modules` is linked from the main tree when the lockfile is unchanged; otherwise the worktree installs. Builds are cached by commit under `.redline/`. The built pages run with History's read-only network layer, so they cannot write to your APIs.
 2. **Find the pages.** File-system routes (Next.js `app/` and `pages/`; Vite `src/pages`, `src/routes` and React Router declarations), a crawl of same-origin links from `/`, `sitemap.xml`, and seeds from you. The crawl loads every page in the first two hops, then only the first page of each dynamic route for two more, up to 150 page loads. A dynamic route such as `/blog/[slug]` is captured only through a concrete URL, and keeps one example besides seeds. When a route has an example, its static sub-routes get one too: `/blog/hello` gives `/blog/hello/comments` for `/blog/[slug]/comments`. This covers tabs reached by buttons rather than links.
 3. **Capture.** Every page at both commits in headless Chromium, 4 at a time (`--concurrency`), set up to repeat: fixed clock, seeded `Math.random`, reduced motion, animations and transitions off, caret hidden, dev overlays hidden, UTC and `en-US`, service workers off, wait for network idle and fonts, scroll to trigger lazy content. Full-page screenshots, cut at 4000px.
-4. **Diff.** Pixel diff with [pixelmatch](https://github.com/mapbox/pixelmatch). Changed pixels are grouped into boxes; specks under 100 square pixels are dropped. Each changed page is then loaded once more at head: areas that also differ between those two loads are live data or timing, not the change, and are dropped. The report counts them and says how to `mask` them.
+4. **Diff.** Pixel diff with [pixelmatch](https://github.com/mapbox/pixelmatch), after a light 3x3 blur of both screenshots so text drawn at a different sub-pixel offset does not count (`diffImages(a, b, { blur: false })` turns it off). Changed pixels are grouped into boxes; specks under 100 square pixels are dropped, and so is a box whose pixels only moved by up to 2px. Each changed page is then loaded once more at head: areas that also differ between those two loads are live data or timing, not the change, and are dropped. The report counts them and says how to `mask` them.
 5. **Explain.** The changed files from `git diff` are traced through an import graph to the pages that use them (layouts wrap the pages under them; global CSS and Tailwind config reach every page). That gives each page its "Likely from" list and ranks direct causes first. If a scan limit is hit, the report says so.
 
 ## CLI
@@ -52,6 +52,10 @@ redline compare [base] [head] [options]
   --chrome <path>      Chrome or Chromium binary to use
   --dev                Run each commit's dev server instead of a production build
   --concurrency <n>    Pages loaded at once (default: 4)
+  --affected           Capture only pages the changed files reach, plus a sample
+  --sample <n>         Other pages captured with --affected (default: 5)
+  --comment <pr|auto>  Post the summary on a pull request with the GitHub CLI
+  --report-url <url>   Where the report is published, for links in the comment
 
 redline snapshot [--root <dir>] [--out <file>]
 redline restore [--root <dir>] [--replace] <file>
@@ -70,6 +74,31 @@ Optional `redline.config.json` in the app directory:
   "viewport": { "width": 1280, "height": 800 }
 }
 ```
+
+### Pull requests
+
+Every report has a `summary.md` next to `index.html`: counts, pages that look broken, shared changes and the pages to review, with their likely files. `--comment <number>` (or `--comment auto` for the current branch's PR) posts it with the GitHub CLI. Later runs update the same comment instead of adding new ones. `--report-url` makes page names link into a published copy of the report.
+
+For a quick PR check, `--affected` captures only the pages the changed files reach, plus 5 other pages (`--sample`) as a check on the import graph. The crawl stops as soon as each affected dynamic route has an example. A change to a shared layout or app-wide config still reaches every page.
+
+```sh
+redline compare $(git merge-base origin/main HEAD) HEAD --affected --comment auto
+```
+
+### Same data, reused screenshots
+
+```json
+{
+  "dataSnapshot": { "file": ".redline/convex-snapshot.zip", "convexDir": "../backend", "restore": "once" },
+  "exclude": ["/auth/callback"]
+}
+```
+
+- `dataSnapshot`: a Convex export (from `redline snapshot`) imported with `npx convex import --replace` before pages are found, so both commits, and every run, see the same data. `restore: "each"` imports it again before each commit's captures, for apps that write on load without `blockConvexWrites`. A missing file is a notice, not an error. `--replace` replaces only the tables in the snapshot.
+- Screenshots are cached by commit under `.redline/captures` when `dataSnapshot` is set (or `"cache": true`). The key covers the viewport, mask, hide, env file, network, write guard, login, serve mode and the snapshot file, so a change to any of them captures again. Each run still loads changed pages at head once more, so cached screenshots are checked against a fresh load.
+- `exclude`: paths or route patterns never captured, such as sign-in callbacks that only redirect.
+
+Each page is captured in a fresh browser context that starts from the storage saved right after sign-in, so what one page writes to `localStorage` cannot change the next one. Before the screenshot, Redline waits for network idle, for the page's text and element count to stay the same for a second, and for images to load (up to 5 s).
 
 ### Noise
 

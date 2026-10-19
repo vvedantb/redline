@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { Browser, BrowserContext, Page } from 'playwright-core';
+import type { Browser, BrowserContext, BrowserContextOptions, Page } from 'playwright-core';
 import { loadChromium } from '../build';
 
 export interface Viewport {
@@ -21,6 +21,8 @@ const FREEZE_CSS = `
   caret-color: transparent !important; scroll-behavior: auto !important;
 }
 nextjs-portal, vite-error-overlay { display: none !important; }
+html { scrollbar-width: none !important; }
+::-webkit-scrollbar { display: none !important; }
 `;
 
 const SEEDED_RANDOM = `(() => {
@@ -62,6 +64,16 @@ export interface BrowserOptions {
   executablePath?: string;
 }
 
+/** Installed browsers tried when Playwright has none of its own. */
+const SYSTEM_CHROME = [
+  '/usr/bin/google-chrome',
+  '/usr/bin/google-chrome-stable',
+  '/usr/bin/chromium',
+  '/usr/bin/chromium-browser',
+  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+  '/Applications/Chromium.app/Contents/MacOS/Chromium',
+];
+
 /** Launch Chromium through the app's or Redline's Playwright install. */
 export async function launchBrowser(root: string, options: BrowserOptions = {}): Promise<Browser> {
   const chromium = ((await loadChromium(root)) ?? (await loadChromium(process.cwd()))) as unknown as { launch(o: object): Promise<Browser> } | null;
@@ -71,6 +83,9 @@ export async function launchBrowser(root: string, options: BrowserOptions = {}):
   try {
     return await chromium.launch({ executablePath: options.executablePath });
   } catch (err) {
+    // No Playwright browser download: use an installed Chrome or Chromium.
+    const system = options.executablePath ? undefined : SYSTEM_CHROME.find((p) => fs.existsSync(p));
+    if (system) return chromium.launch({ executablePath: system });
     const first = err instanceof Error ? err.message.split('\n')[0] : String(err);
     throw new Error(`Could not start Chromium (${first}). Run: npx playwright install chromium, or pass --chrome <path>.`);
   }
@@ -81,8 +96,9 @@ export async function launchBrowser(root: string, options: BrowserOptions = {}):
  * `now` moves the fixed clock. Signed-in captures need the real time: a clock in the past makes
  * every cookie the app sets from script expire at once, and session tokens look issued in the future.
  */
-export async function stableContext(browser: Browser, viewport: Viewport = DEFAULT_VIEWPORT, now: Date = FIXED_TIME): Promise<BrowserContext> {
+export async function stableContext(browser: Browser, viewport: Viewport = DEFAULT_VIEWPORT, now: Date = FIXED_TIME, storageState?: BrowserContextOptions['storageState']): Promise<BrowserContext> {
   const context = await browser.newContext({
+    storageState,
     viewport,
     deviceScaleFactor: 1,
     reducedMotion: 'reduce',
@@ -119,8 +135,30 @@ export function appPathOf(prefix: string, href: string): string | null {
   return rest;
 }
 
+/**
+ * Wait until the page's text and element count stop changing for a second. Apps that render
+ * after sign-in or over a WebSocket keep changing after the network goes quiet.
+ */
+async function waitForStableDom(page: Page, timeoutMs = 10_000): Promise<void> {
+  await page
+    .evaluate(async (timeout) => {
+      const sig = () => `${document.body?.innerText.length ?? 0}:${document.getElementsByTagName('*').length}`;
+      const start = performance.now();
+      let last = sig();
+      let same = 0;
+      while (same < 4 && performance.now() - start < timeout) {
+        await new Promise((r) => setTimeout(r, 250));
+        const now = sig();
+        same = now === last ? same + 1 : 0;
+        last = now;
+      }
+    }, timeoutMs)
+    .catch(() => undefined);
+}
+
 async function settle(page: Page): Promise<void> {
   await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => undefined);
+  await waitForStableDom(page);
   await page.addStyleTag({ content: FREEZE_CSS }).catch(() => undefined);
   await page
     .evaluate(async () => {
@@ -131,6 +169,25 @@ async function settle(page: Page): Promise<void> {
         await new Promise((r) => requestAnimationFrame(() => r(null)));
       }
       window.scrollTo(0, 0);
+      // A font weight first used below the fold can start loading after fonts.ready resolved, so
+      // text renders in a stand-in face at one commit and the real one at the other. Load all.
+      const fonts = (document as Document & { fonts?: Iterable<{ load(): Promise<unknown> }> }).fonts;
+      if (fonts) await Promise.race([Promise.all(Array.from(fonts, (f) => f.load().catch(() => undefined))), new Promise((r) => setTimeout(r, 5000))]);
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(null))));
+      // Images that load late change the layout: wait for each one to load or fail, up to 5 s.
+      const pending = Array.from(document.images).filter((img) => !img.complete);
+      await Promise.race([
+        Promise.all(
+          pending.map(
+            (img) =>
+              new Promise((r) => {
+                img.addEventListener('load', r, { once: true });
+                img.addEventListener('error', r, { once: true });
+              }),
+          ),
+        ),
+        new Promise((r) => setTimeout(r, 5000)),
+      ]);
     })
     .catch(() => undefined);
   await page.waitForLoadState('networkidle', { timeout: 2000 }).catch(() => undefined);

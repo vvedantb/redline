@@ -63,3 +63,11 @@ function commonSuspects(pages: GroupablePage[]): RouteSource[] {
     .slice(0, 5)
     .map(([file, { depth }]) => ({ file, depth }));
 }
+
+const sameBox = (a: Region, b: Region) => a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height;
+
+/** Every changed area of a changed page belongs to one of its shared changes. */
+export function isOnlyShared(shared: SharedChange[] | undefined, page: { status: string; regions: Region[]; shared?: number[] }): boolean {
+  const groups = (page.shared ?? []).map((id) => shared?.[id]).filter((g): g is SharedChange => !!g);
+  return page.status === 'changed' && groups.length > 0 && page.regions.every((r) => groups.some((g) => g.regions.some((gr) => sameBox(gr, r))));
+}
