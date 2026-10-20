@@ -58,10 +58,12 @@ redline compare [base] [head] [options]
   --report-url <url>   Where the report is published, for links in the comment
 
 redline snapshot [--root <dir>] [--out <file>]
-redline restore [--root <dir>] [--replace] <file>
+redline restore [--root <dir>] [--replace] [--yes] [--allow-prod] <file>
 ```
 
 `snapshot` runs `npx convex export --include-file-storage` and saves a zip (default `.redline/convex-snapshot.zip`) with a `.json` sidecar. `restore` runs `npx convex import <file>`. Both use the selected Convex deployment, which must be running. See [docs/convex-local-snapshots.md](docs/convex-local-snapshots.md).
+
+Before any import (`restore`, or `compare` with `dataSnapshot`) Redline prints the deployment it is about to write to, for example `redline: replacing data in Convex deployment dev:happy-otter-123 (from CONVEX_DEPLOYMENT in .env.local)`. It refuses a `prod` deployment, and one it cannot identify (a `*.convex.cloud` URL with no deployment name), unless you pass `--allow-prod` or set `dataSnapshot.allowProd: true`. See [Production guard](docs/convex-local-snapshots.md#production-guard).
 
 Run it from the app directory (in a monorepo, the package with the Next or Vite config). It exits with 1 on errors such as a failed build, and 0 otherwise, whatever the report says.
 
@@ -94,7 +96,7 @@ redline compare $(git merge-base origin/main HEAD) HEAD --affected --comment aut
 }
 ```
 
-- `dataSnapshot`: a Convex export (from `redline snapshot`) imported with `npx convex import --replace` before pages are found, so both commits, and every run, see the same data. `restore: "each"` imports it again before each commit's captures, for apps that write on load without `blockConvexWrites`. A missing file is a notice, not an error. `--replace` replaces only the tables in the snapshot.
+- `dataSnapshot`: a Convex export (from `redline snapshot`) imported with `npx convex import --replace` before pages are found, so both commits, and every run, see the same data. `restore: "each"` imports it again before each commit's captures, for apps that write on load without `blockConvexWrites`. A missing file is a notice, not an error. `--replace` replaces only the tables in the snapshot. Redline refuses a production deployment, or one it cannot identify, before anything is built; `"allowProd": true` (or `--allow-prod`) lets it through. See [Production guard](docs/convex-local-snapshots.md#production-guard).
 - Screenshots are cached by commit under `.redline/captures` when `dataSnapshot` is set (or `"cache": true`). The key covers the viewport, mask, hide, env file, network, write guard, login, serve mode and the snapshot file, so a change to any of them captures again. Each run still loads changed pages at head once more, so cached screenshots are checked against a fresh load.
 - `exclude`: paths or route patterns never captured, such as sign-in callbacks that only redirect.
 

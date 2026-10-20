@@ -6,7 +6,7 @@ import { pathToFileURL } from 'node:url';
 import type { BrowserContext, Page } from 'playwright-core';
 import { BuildManager } from '../build';
 import { parseUnifiedDiff } from '../diff';
-import { convexImportArgs } from '../convex';
+import { checkConvexTarget, convexImportArgs, readConvexTarget } from '../convex';
 import { parseEnvText } from '../env';
 import { analyzeRoutePair, createJevClient, JEV_SKIPPED_NOTICE, mockJevFetch, type JevAnalysis, type JevCandidate, type JevClient } from '../jev';
 import { resolveCommit } from '../server';
@@ -71,6 +71,8 @@ export interface CompareOptions {
   dataSnapshot?: DataSnapshot;
   /** Reuse screenshots of a commit from earlier runs with the same settings. Default: on with `dataSnapshot`. */
   cache?: boolean;
+  /** Let `dataSnapshot` replace data in a production deployment, or one Redline cannot identify. */
+  allowProd?: boolean;
 }
 
 export type CaptureScope = 'all' | 'affected';
@@ -85,6 +87,8 @@ export interface DataSnapshot {
    * change the data. `each`: import before each commit's captures too. Default `once`.
    */
   restore?: 'once' | 'each';
+  /** Import even when the deployment is production, or Redline cannot tell. Default `false`. */
+  allowProd?: boolean;
 }
 
 export type NetworkPolicy = 'read-only' | 'live';
@@ -309,8 +313,12 @@ function fileStamp(file: string): string {
   return `${s.size}:${s.mtimeMs}`;
 }
 
-/** `npx convex import --replace --yes` in `convexDir`. Output is kept out of the compare log. */
-function importSnapshot(convexDir: string, file: string): void {
+/**
+ * `npx convex import --replace --yes` in `convexDir`, after checking and logging the target
+ * deployment. Output is kept out of the compare log.
+ */
+export function importSnapshot(convexDir: string, file: string, { allowProd, log }: { allowProd?: boolean; log: (message: string) => void }): void {
+  log(checkConvexTarget(readConvexTarget(convexDir), { allowProd, replace: true }));
   const res = spawnSync('npx', ['convex', ...convexImportArgs(file, { replace: true, yes: true, tty: false })], { cwd: convexDir, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
   if (res.error || res.status !== 0) {
     const tail = `${res.stderr ?? ''}${res.stdout ?? ''}`.trim().split('\n').slice(-5).join('\n');
@@ -417,10 +425,14 @@ export async function compare(options: CompareOptions = {}): Promise<CompareResu
   const wantedSnapshot = dataSnapshot ? path.resolve(root, dataSnapshot.file) : null;
   // A missing snapshot is a notice, not an error: the run still works on live data.
   const snapshotFile = wantedSnapshot && fs.existsSync(wantedSnapshot) ? wantedSnapshot : null;
+  const convexDir = path.resolve(root, dataSnapshot?.convexDir ?? '.');
+  const allowProd = options.allowProd ?? dataSnapshot?.allowProd;
+  // Refuse a production target before anything is built.
+  if (snapshotFile) checkConvexTarget(readConvexTarget(convexDir), { allowProd, replace: true });
   const restoreData = (label: string) => {
     if (!snapshotFile) return;
     log(`Importing the data snapshot (${label})...`);
-    importSnapshot(path.resolve(root, dataSnapshot?.convexDir ?? '.'), snapshotFile);
+    importSnapshot(convexDir, snapshotFile, { allowProd, log });
   };
   const cacheKey = (options.cache ?? config.cache ?? !!snapshotFile)
     ? hashOf({ v: CAPTURE_CACHE_VERSION, viewport, mask, hide, env, network, blockConvexWrites, login: login ? loginKey(root, options.hooks ?? config.hooks, options.auth ?? config.auth) : null, serve, snapshot: snapshotFile ? fileStamp(snapshotFile) : null })
