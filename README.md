@@ -32,7 +32,7 @@ Click a page for before and after side by side with numbered boxes on the change
 ## How `compare` works
 
 1. **Build both commits.** Each commit is built in its own git worktree with the same engine as the overlay's History builds: `vite build --base /__redline/h/<sha>/`, or `next build` with `output: 'standalone'` and a matching `basePath`. Your working tree is never touched. `node_modules` is linked from the main tree when the lockfile is unchanged; otherwise the worktree installs. Builds are cached by commit under `.redline/`. The built pages run with History's read-only network layer, so they cannot write to your APIs.
-2. **Find the pages.** File-system routes (Next.js `app/` and `pages/`; Vite `src/pages`, `src/routes` and React Router declarations), a crawl of same-origin links from `/`, `sitemap.xml`, and seeds from you. The crawl loads every page in the first two hops, then only the first page of each dynamic route for two more, up to 150 page loads. A dynamic route such as `/blog/[slug]` is captured only through a concrete URL, and keeps one example besides seeds. When a route has an example, its static sub-routes get one too: `/blog/hello` gives `/blog/hello/comments` for `/blog/[slug]/comments`. This covers tabs reached by buttons rather than links.
+2. **Find the pages.** File-system routes (Next.js `app/` and `pages/`; Vite `src/pages`, `src/routes` and React Router declarations), a crawl of same-origin links from `/`, `sitemap.xml`, and seeds from you. The crawl loads every page in the first two hops, then only the first page of each dynamic route for two more, up to 150 page loads. A dynamic route such as `/blog/[slug]` is captured only through a concrete URL, and keeps one example besides seeds. When a route has an example, its static sub-routes get one too: `/blog/hello` gives `/blog/hello/comments` for `/blog/[slug]/comments`. This covers tabs reached by buttons rather than links. Sign-out routes are never loaded (see [Signed-in pages](#signed-in-pages)).
 3. **Capture.** Every page at both commits in headless Chromium, 4 at a time (`--concurrency`), set up to repeat: fixed clock, seeded `Math.random`, reduced motion, animations and transitions off, caret hidden, dev overlays hidden, UTC and `en-US`, service workers off, wait for network idle and fonts, scroll to trigger lazy content. Full-page screenshots, cut at 4000px.
 4. **Diff.** Pixel diff with [pixelmatch](https://github.com/mapbox/pixelmatch), after a light 3x3 blur of both screenshots so text drawn at a different sub-pixel offset does not count (`diffImages(a, b, { blur: false })` turns it off). Changed pixels are grouped into boxes; specks under 100 square pixels are dropped, and so is a box whose pixels only moved by up to 2px. Each changed page is then loaded once more at head: areas that also differ between those two loads are live data or timing, not the change, and are dropped. The report counts them and says how to `mask` them.
 5. **Explain.** The changed files from `git diff` are traced through an import graph to the pages that use them (layouts wrap the pages under them; global CSS and Tailwind config reach every page). That gives each page its "Likely from" list and ranks direct causes first. If a scan limit is hit, the report says so.
@@ -131,6 +131,7 @@ These fields let `compare` capture pages behind sign-in, against a local backend
 - `network`: `live` turns off the read-only network layer in captured pages, so sign-in requests and backend writes go through. Use it only with a seeded local backend. The default is `read-only`.
 - `blockConvexWrites`: drops the Convex mutation and action messages that captured pages send over their WebSocket, so a page that writes on load cannot change what the other commit sees. Queries still run. Each page reports how many writes were dropped.
 - `hooks`: a module with optional `login` and `routePath` exports. The older `auth` field (a module whose default export is `login`) still works.
+- `signOutPaths`: extra sign-out paths that page discovery never loads, such as `["/end-session"]`. A path under one counts too. See below.
 
 ```js
 // redline.hooks.mjs
@@ -152,6 +153,8 @@ export function routePath(path) {
   return path.replace(/^\/([^/]+)\/([^/]+)\/(web|docs)(\/|$)/, '/$1/$2--$3$4');
 }
 ```
+
+Page discovery never loads a sign-out route: one load would end the session for every page after it, and a server that ends the session on its side signs out every capture. By default it skips any path with a `logout`, `log-out`, `log_out`, `signout`, `sign-out` or `sign_out` segment, such as `/signout/` or `/api/auth/signout`, with or without a trailing slash. This applies to crawled links, file routes, `sitemap.xml` and derived examples. Add your own with `signOutPaths`. Seeds are still loaded, because you asked for them.
 
 Both commits are served from `127.0.0.1`, which shares cookies across ports, so `login` should return early when it finds a session. With `login` set, the fixed capture clock is the time the run starts instead of 1 January 2025: a clock in the past makes cookies set from script expire at once.
 

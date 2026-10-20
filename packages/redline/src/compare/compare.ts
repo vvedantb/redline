@@ -61,6 +61,8 @@ export interface CompareOptions {
   hide?: string[];
   /** Paths or route patterns never captured, such as sign-in callbacks. */
   exclude?: string[];
+  /** Sign-out paths the crawl never follows, on top of the built-in `logout`, `signout` and similar ones. */
+  signOutPaths?: string[];
   /** Drop Convex mutations and actions sent by captured pages. */
   blockConvexWrites?: boolean;
   /** `affected`: capture only pages the changed files reach, plus a sample of the rest. Default `all`. */
@@ -138,6 +140,7 @@ export interface RedlineConfig {
   mask?: string[];
   hide?: string[];
   exclude?: string[];
+  signOutPaths?: string[];
   blockConvexWrites?: boolean;
   scope?: CaptureScope;
   sample?: number;
@@ -418,6 +421,7 @@ export async function compare(options: CompareOptions = {}): Promise<CompareResu
   const mask = [...(config.mask ?? []), ...(options.mask ?? [])];
   const hide = [...(config.hide ?? []), ...(options.hide ?? [])];
   const exclude = new Set([...(config.exclude ?? []), ...(options.exclude ?? [])]);
+  const signOutPaths = [...(config.signOutPaths ?? []), ...(options.signOutPaths ?? [])];
   const blockConvexWrites = options.blockConvexWrites ?? config.blockConvexWrites ?? false;
   const scope = options.scope ?? config.scope ?? 'all';
   const sample = options.sample ?? config.sample ?? DEFAULT_SAMPLE;
@@ -535,7 +539,7 @@ export async function compare(options: CompareOptions = {}): Promise<CompareResu
     log('Finding pages...');
     const affectedPatterns = new Set([...affected.routes, ...affected.removed].map((r) => r.route));
     const targets = scope === 'affected' ? [...affectedPatterns].filter(isDynamicRoute) : undefined;
-    const discover = { seeds, maxRoutes: Infinity, framework, context, routePath, concurrency, targets };
+    const discover = { seeds, maxRoutes: Infinity, framework, context, routePath, concurrency, targets, signOutPaths };
     const [before, after] = await Promise.all([
       discoverRoutes({ ...discover, root: baseTree, baseUrl: baseServed.url }),
       discoverRoutes({ ...discover, root: headTree, baseUrl: headServed?.url }),

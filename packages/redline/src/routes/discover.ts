@@ -40,6 +40,8 @@ export interface DiscoverOptions {
   concurrency?: number;
   /** Stop the crawl once each of these route patterns has an example URL. */
   targets?: string[];
+  /** Sign-out paths never loaded, on top of the built-in ones (see `isSignOutPath`). Seeds are still loaded. */
+  signOutPaths?: string[];
 }
 
 export type RoutePath = (appPath: string) => string;
@@ -57,6 +59,20 @@ export const DEFAULT_MAX_ROUTES = 50;
 const CRAWL_DEPTH = 4;
 export const DEFAULT_CRAWL_BUDGET = 150;
 export const DEFAULT_CONCURRENCY = 4;
+
+/** A `logout`, `log-out`, `log_out`, `signout`, `sign-out` or `sign_out` path segment, as in `/auth/signout/`. */
+const SIGN_OUT = /(^|\/)(log[-_]?out|sign[-_]?out)(\/|$)/i;
+
+/**
+ * Whether loading `appPath` would end the session. The crawl never follows these links and
+ * discovery never returns them: one load signs the capture browser out for every page after it,
+ * and a server that ends the session server-side signs out every context. `extra` paths match
+ * exactly or as a parent path.
+ */
+export function isSignOutPath(appPath: string, extra: string[] = []): boolean {
+  const p = normalize(appPath);
+  return SIGN_OUT.test(p) || extra.map(normalize).some((e) => p === e || p.startsWith(`${e}/`));
+}
 
 function segmentRegex(seg: string): string {
   let m: RegExpMatchArray | null;
@@ -125,6 +141,7 @@ async function fetchSitemap(baseUrl: string): Promise<string[]> {
 
 interface CrawlOptions {
   targets?: string[];
+  signOutPaths: string[];
   patterns: string[];
   routePath: RoutePath;
   budget: number;
@@ -136,7 +153,7 @@ interface CrawlOptions {
  * only the first page of each dynamic route, so lists lead to one example of each detail page
  * without loading every row. Stops after `budget` page loads.
  */
-async function crawl(context: BrowserContext, baseUrl: string, { targets, patterns, routePath, budget, concurrency }: CrawlOptions): Promise<string[]> {
+async function crawl(context: BrowserContext, baseUrl: string, { targets, signOutPaths, patterns, routePath, budget, concurrency }: CrawlOptions): Promise<string[]> {
   const prefix = baseUrl.replace(/\/$/, '');
   const found = new Set<string>(['/']);
   const followed = new Set<string>();
@@ -148,7 +165,7 @@ async function crawl(context: BrowserContext, baseUrl: string, { targets, patter
     const pages = await mapPool(batch, concurrency, (p) => capturePage(context, prefix, p));
     const next: string[] = [];
     for (const link of pages.flatMap((page) => page.links)) {
-      if (found.has(link)) continue;
+      if (found.has(link) || isSignOutPath(link, signOutPaths)) continue;
       found.add(link);
       const pattern = patternFor(link, patterns, routePath);
       if (depth >= 1 && pattern && isDynamicRoute(pattern)) {
@@ -212,23 +229,24 @@ export async function discoverRoutes(options: DiscoverOptions): Promise<Discover
     (found.get(key) ?? found.set(key, new Set()).get(key)!).add(from);
   };
   const routePath = options.routePath ?? same;
+  const signOutPaths = options.signOutPaths ?? [];
   for (const s of options.seeds ?? []) add(s, 'seed');
-  for (const p of patterns) if (!isDynamicRoute(p)) add(p, 'file');
+  for (const p of patterns) if (!isDynamicRoute(p) && !isSignOutPath(p, signOutPaths)) add(p, 'file');
 
   if (options.baseUrl) {
-    for (const p of await fetchSitemap(options.baseUrl)) add(p, 'sitemap');
+    for (const p of await fetchSitemap(options.baseUrl)) if (!isSignOutPath(p, signOutPaths)) add(p, 'sitemap');
     let context = options.context;
     const browser = context ? null : await launchBrowser(options.root, options.browser);
     try {
       context ??= await stableContext(browser!);
-      const crawlOptions = { targets: options.targets, patterns, routePath, budget: options.crawlBudget ?? DEFAULT_CRAWL_BUDGET, concurrency: options.concurrency ?? DEFAULT_CONCURRENCY };
+      const crawlOptions = { targets: options.targets, signOutPaths, patterns, routePath, budget: options.crawlBudget ?? DEFAULT_CRAWL_BUDGET, concurrency: options.concurrency ?? DEFAULT_CONCURRENCY };
       for (const p of await crawl(context, options.baseUrl, crawlOptions)) add(p, 'link');
     } finally {
       await browser?.close();
     }
   }
 
-  for (const url of deriveExamples(found.keys(), patterns, routePath).values()) add(url, 'derived');
+  for (const url of deriveExamples(found.keys(), patterns, routePath).values()) if (!isSignOutPath(url, signOutPaths)) add(url, 'derived');
   const all = [...found.entries()].map(([p, from]) => ({ path: p, pattern: patternFor(p, patterns, routePath), from: [...from].sort() as RouteOrigin[] }));
   return { ...capRoutes(all, maxRoutes, patterns), patterns };
 }
