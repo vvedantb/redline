@@ -52,6 +52,8 @@ export interface PageCapture {
   content: number;
   /** Same-origin links, as app paths. */
   links: string[];
+  /** A visible password field was on the page: a sign-in form, or a page that asks for a password. */
+  signInForm?: boolean;
   /** Convex mutations and actions the write guard dropped. */
   blockedWrites: number;
   image?: string;
@@ -244,10 +246,12 @@ export async function capturePage(context: BrowserContext, prefix: string, appPa
       text: document.body?.innerText ?? '',
       media: document.querySelectorAll('img, video, canvas, svg, iframe').length,
       links: Array.from(document.querySelectorAll('a[href]'), (a) => (a as HTMLAnchorElement).href),
+      password: Array.from(document.querySelectorAll('input[type=password]')).some((el) => el.getClientRects().length > 0),
       height: document.documentElement.scrollHeight,
       blocked: (window as Window & { __redlineBlockedWrites?: number }).__redlineBlockedWrites ?? 0,
     }));
     result.blockedWrites = info.blocked;
+    result.signInForm = info.password;
     result.appError = APP_ERROR.test(info.text);
     result.notFound = result.status === 404 || NOT_FOUND.test(info.text);
     result.content = info.text.trim().length + info.media;

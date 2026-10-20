@@ -17,7 +17,7 @@ import { capturePage, CONVEX_WRITE_GUARD, DEFAULT_VIEWPORT, launchBrowser, stabl
 import { startDevServer } from './devserver';
 import { groupSharedChanges } from './groups';
 import { mapPool } from './pool';
-import { BLANK_BOTH, classify, rankPages, type PageStatus } from './classify';
+import { BLANK_BOTH, SIGNED_OUT, classify, rankPages, type PageStatus } from './classify';
 import { diffImages, dropLoadNoise, regionHashes, type Region } from './pixels';
 import { buildRouteChanges } from './routechanges';
 import { writeReport, type CommitRef, type PageShot, type Report, type ReportFileDiff, type ReportPage } from './report';
@@ -61,6 +61,11 @@ export interface CompareOptions {
   hide?: string[];
   /** Paths or route patterns never captured, such as sign-in callbacks. */
   exclude?: string[];
+  /**
+   * App paths of the sign-in screen. With a login hook, a page that ends on one of them (or under
+   * one) is "Couldn't check: signed out". Default: paths like `/login`, `/sign-in`, `/auth`, `/sso`.
+   */
+  signInPaths?: string[];
   /** Drop Convex mutations and actions sent by captured pages. */
   blockConvexWrites?: boolean;
   /** `affected`: capture only pages the changed files reach, plus a sample of the rest. Default `all`. */
@@ -138,6 +143,7 @@ export interface RedlineConfig {
   mask?: string[];
   hide?: string[];
   exclude?: string[];
+  signInPaths?: string[];
   blockConvexWrites?: boolean;
   scope?: CaptureScope;
   sample?: number;
@@ -292,7 +298,7 @@ function clearOut(outDir: string): void {
 
 const DEFAULT_SAMPLE = 5;
 /** Bump when a change to capturing makes old cached screenshots wrong. */
-const CAPTURE_CACHE_VERSION = 6;
+const CAPTURE_CACHE_VERSION = 7;
 
 function hashOf(value: unknown): string {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex').slice(0, 16);
@@ -418,6 +424,7 @@ export async function compare(options: CompareOptions = {}): Promise<CompareResu
   const mask = [...(config.mask ?? []), ...(options.mask ?? [])];
   const hide = [...(config.hide ?? []), ...(options.hide ?? [])];
   const exclude = new Set([...(config.exclude ?? []), ...(options.exclude ?? [])]);
+  const signInPaths = [...(config.signInPaths ?? []), ...(options.signInPaths ?? [])];
   const blockConvexWrites = options.blockConvexWrites ?? config.blockConvexWrites ?? false;
   const scope = options.scope ?? config.scope ?? 'all';
   const sample = options.sample ?? config.sample ?? DEFAULT_SAMPLE;
@@ -619,7 +626,7 @@ export async function compare(options: CompareOptions = {}): Promise<CompareResu
       const { regions, changedRatio, unstable } = diffs[i];
       const inBase = patternFor(route.path, before.patterns, routePath) !== null;
       const inHead = patternFor(route.path, after.patterns, routePath) !== null;
-      const classified = classify({ before: b, after: a, regions, inBase, inHead });
+      const classified = classify({ before: b, after: a, regions, inBase, inHead, login: !!login, signInPaths });
       const { status } = classified;
       const reason = status === 'unchanged' && unstable
         ? `Only areas that differ between two loads of the same commit changed (${unstable})`
@@ -666,6 +673,10 @@ export async function compare(options: CompareOptions = {}): Promise<CompareResu
     if (overCap) notices.push(`${overCap} page(s) were not captured because of the ${maxRoutes}-page limit. Raise it with --max-routes.`);
     if (routes.length && pages.filter((p) => p.reason === BLANK_BOTH).length === routes.length) {
       notices.push('Every page was blank at both commits. Builds run without secret and Convex env keys, so an app that needs them to start renders nothing.');
+    }
+    const signedOut = ranked.filter((p) => p.reason.startsWith(SIGNED_OUT)).length;
+    if (signedOut) {
+      notices.push(`${signedOut} page(s) ended on a sign-in screen, so they were not compared. The login hook may have failed, or the session ended during the run. Set "signInPaths" if your sign-in screen has another path.`);
     }
     const unstablePages = ranked.filter((p) => p.unstable);
     if (unstablePages.length) {

@@ -171,6 +171,54 @@ describe('classify', () => {
     expect(classify({ ...both, before: page({ content: 0 }), after: page({ content: 0 }) })).toEqual({ status: 'skipped', reason: BLANK_BOTH });
   });
 
+  describe('with a login hook', () => {
+    const login = { ...both, login: true, regions: [box] };
+
+    it("marks a page that ended on a sign-in screen at either commit as couldn't check", () => {
+      // The carepulse-ts case: every base capture redirected to the sign-in page, head was signed in.
+      expect(classify({ ...login, before: page({ finalPath: '/signin' }), after: page() })).toEqual({
+        status: 'skipped',
+        reason: 'Signed out at the base commit (ended on /signin)',
+      });
+      expect(classify({ ...login, before: page(), after: page({ finalPath: '/accounts/log_in' }) })).toEqual({
+        status: 'skipped',
+        reason: 'Signed out at the head commit (ended on /accounts/log_in)',
+      });
+      expect(classify({ ...login, before: page({ finalPath: '/sign_in' }), after: page({ finalPath: '/sign_in' }) }).reason).toBe(
+        'Signed out at both commits (ended on /sign_in)',
+      );
+    });
+
+    it('uses signInPaths instead of the built-in pattern when set', () => {
+      const signInPaths = ['/welcome/'];
+      expect(classify({ ...login, signInPaths, before: page({ finalPath: '/welcome' }), after: page() }).reason).toBe(
+        'Signed out at the base commit (ended on /welcome)',
+      );
+      expect(classify({ ...login, signInPaths, before: page({ finalPath: '/welcome/back' }), after: page() }).status).toBe('skipped');
+      // With signInPaths set, the built-in pattern and the password-field check are not used.
+      expect(classify({ ...login, signInPaths, before: page({ finalPath: '/login' }), after: page() }).status).toBe('changed');
+      expect(classify({ ...login, signInPaths, before: page(), after: page({ signInForm: true }) }).status).toBe('changed');
+    });
+
+    it('marks a sign-in form shown in place at one commit only', () => {
+      expect(classify({ ...login, before: page({ signInForm: true }), after: page() })).toEqual({
+        status: 'skipped',
+        reason: 'Signed out at the base commit (showed a sign-in form)',
+      });
+      // A password field at both commits is part of the page, such as a change-password form.
+      expect(classify({ ...login, before: page({ signInForm: true }), after: page({ signInForm: true }) }).status).toBe('changed');
+    });
+
+    it('still captures the sign-in page itself', () => {
+      const signInPage = page({ path: '/login', finalPath: '/login', signInForm: true });
+      expect(classify({ ...login, before: signInPage, after: signInPage }).status).toBe('changed');
+    });
+  });
+
+  it('needs a login hook to treat a base-side sign-in screen as signed out', () => {
+    expect(classify({ ...both, regions: [box], before: page({ signInForm: true }), after: page() }).status).toBe('changed');
+  });
+
   it('ranks broken first, then changed pages with a direct cause', () => {
     const p = (path: string, status: ReportPage['status'], depth?: number, changedRatio = 0) => ({ path, status, suspects: depth === undefined ? [] : [{ file: 'f', depth }], changedRatio });
     const ranked = rankPages([p('/u', 'unchanged'), p('/c2', 'changed', 3, 0.5), p('/c1', 'changed', 0, 0.01), p('/b', 'broken'), p('/n', 'added'), p('/c3', 'changed', 3, 0.9)]);

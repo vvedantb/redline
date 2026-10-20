@@ -123,7 +123,8 @@ These fields let `compare` capture pages behind sign-in, against a local backend
   "envFile": ".env.redline",
   "network": "live",
   "blockConvexWrites": true,
-  "hooks": "redline.hooks.mjs"
+  "hooks": "redline.hooks.mjs",
+  "signInPaths": ["/signin/"]
 }
 ```
 
@@ -131,6 +132,7 @@ These fields let `compare` capture pages behind sign-in, against a local backend
 - `network`: `live` turns off the read-only network layer in captured pages, so sign-in requests and backend writes go through. Use it only with a seeded local backend. The default is `read-only`.
 - `blockConvexWrites`: drops the Convex mutation and action messages that captured pages send over their WebSocket, so a page that writes on load cannot change what the other commit sees. Queries still run. Each page reports how many writes were dropped.
 - `hooks`: a module with optional `login` and `routePath` exports. The older `auth` field (a module whose default export is `login`) still works.
+- `signInPaths`: app paths of your sign-in screen. Optional. See [Signed-out captures](#signed-out-captures).
 
 ```js
 // redline.hooks.mjs
@@ -154,6 +156,17 @@ export function routePath(path) {
 ```
 
 Both commits are served from `127.0.0.1`, which shares cookies across ports, so `login` should return early when it finds a session. With `login` set, the fixed capture clock is the time the run starts instead of 1 January 2025: a clock in the past makes cookies set from script expire at once.
+
+#### Signed-out captures
+
+With a login hook, every capture at both commits should be signed in. If a capture shows the sign-in screen instead, it does not show the page, so Redline marks the page "Couldn't check" with a reason such as `Signed out at the base commit (ended on /signin/)`, not "Changed". The report also adds a notice with the count. A capture counts as signed out when:
+
+- it was redirected to a sign-in path: one of `signInPaths`, or a path under one. Without `signInPaths`, any path with a `login`, `log-in`, `log_in`, `signin`, `sign-in`, `sign_in`, `auth` or `sso` segment counts.
+- or, when `signInPaths` is not set, it showed a visible password field and the same page at the other commit did not. This covers apps that show the sign-in form in place, without a redirect. A password field at both commits, as on a change-password page, does not count.
+
+Set `signInPaths` when your sign-in screen has its own path. Then only those paths count, which is the most exact check.
+
+A page you ask for directly, such as `/login` itself, is captured as usual. Without a login hook, only a head-side redirect to a sign-in path is checked, and the reason is `Needs sign-in`.
 
 ### Dev-server mode
 
@@ -188,7 +201,8 @@ const { routes: hit, removed, unplaced, limits } = affectedRoutes({
 ## Compare limits
 
 - Needs Playwright and Chromium (`npx playwright install chromium`), or `--chrome` pointing at an installed Chrome.
-- Pages behind sign-in are listed as "Couldn't check", unless you add a login hook (see [Signed-in pages](#signed-in-pages)).
+- Pages behind sign-in are listed as "Couldn't check", unless you add a login hook (see [Signed-in pages](#signed-in-pages)). With a login hook, a capture that ends signed out is "Couldn't check" too (see [Signed-out captures](#signed-out-captures)).
+- With a login hook and no `signInPaths`, a change that adds a password field to an existing page reads as signed out at head. Set `signInPaths` to check by path only.
 - Signed-in captures with `network: live` read and write the backend that `envFile` points at. Base is captured before head, so a page that writes on load can change what head sees. `blockConvexWrites` stops this for Convex; other APIs still receive writes.
 - Pages that load data at runtime see History's read-only network layer: reads are replayed from `.redline/network-fixtures.json` when a fixture matches, writes never leave the browser. Pages that depend on live data may differ between runs.
 - Both commits must build. A failed build stops the run and prints the end of its log.
