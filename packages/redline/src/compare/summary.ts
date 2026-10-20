@@ -16,13 +16,24 @@ const ORDER: PageStatus[] = ['broken', 'changed', 'added', 'removed', 'skipped',
 
 const md = (s: string) => s.replace(/([\\`*_[\]<>|])/g, '\\$1');
 
+/**
+ * `s` as a code span, for paths, files and SHAs. Backslashes show literally inside one, so nothing
+ * is escaped: the fence is one backtick longer than the longest backtick run in `s`, padded with
+ * spaces when `s` starts or ends with a backtick or space (Markdown strips one space each side).
+ */
+export function code(s: string): string {
+  const fence = '`'.repeat(Math.max(0, ...(s.match(/`+/g) ?? []).map((run) => run.length)) + 1);
+  const pad = /^[` ]|[` ]$/.test(s) ? ' ' : '';
+  return `${fence}${pad}${s}${pad}${fence}`;
+}
+
 /** A short Markdown summary of a report, for a pull request comment. */
 export function renderSummary(r: Report, options: SummaryOptions = {}): string {
   const base = options.reportUrl?.replace(/\/+$/, '');
-  const link = (p: ReportPage) => (base ? `[\`${md(p.path)}\`](${base}/pages/${p.id}.html)` : `\`${md(p.path)}\``);
-  const from = (files: { file: string }[]) => (files.length ? ` — likely from ${files.slice(0, 2).map((s) => `\`${md(s.file)}\``).join(', ')}` : '');
+  const link = (p: ReportPage) => (base ? `[${code(p.path)}](${base}/pages/${p.id}.html)` : code(p.path));
+  const from = (files: { file: string }[]) => (files.length ? ` — likely from ${files.slice(0, 2).map((s) => code(s.file)).join(', ')}` : '');
   const out: string[] = [SUMMARY_MARKER, '### Redline: what changed on screen', ''];
-  out.push(`\`${r.base.sha.slice(0, 7)}\` ${md(r.base.subject)} → \`${r.head.sha.slice(0, 7)}\` ${md(r.head.subject)}`, '');
+  out.push(`${code(r.base.sha.slice(0, 7))} ${md(r.base.subject)} → ${code(r.head.sha.slice(0, 7))} ${md(r.head.subject)}`, '');
   out.push(`| ${ORDER.map((s) => STATUS_LABELS[s]).join(' | ')} |`, `| ${ORDER.map(() => '---:').join(' | ')} |`, `| ${ORDER.map((s) => r.summary[s]).join(' | ')} |`, '');
 
   const broken = r.pages.filter((p) => p.status === 'broken');

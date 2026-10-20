@@ -18,7 +18,7 @@ import { startDevServer } from './devserver';
 import { groupSharedChanges } from './groups';
 import { mapPool } from './pool';
 import { BLANK_BOTH, classify, rankPages, type PageStatus } from './classify';
-import { diffImages, dropShifted, overlaps, regionHashes, type Region } from './pixels';
+import { diffImages, dropLoadNoise, regionHashes, type Region } from './pixels';
 import { buildRouteChanges } from './routechanges';
 import { writeReport, type CommitRef, type PageShot, type Report, type ReportFileDiff, type ReportPage } from './report';
 
@@ -294,6 +294,16 @@ function hashOf(value: unknown): string {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex').slice(0, 16);
 }
 
+/**
+ * Hash of the login setup: each hooks or auth module's contents, or the hook's source. Changing the
+ * signed-in user or role then misses the capture cache. Only the hash is kept, never credentials.
+ */
+export function loginKey(root: string, hooks: CompareHooks | string | undefined, auth: LoginHook | string | undefined): string {
+  const source = (h: CompareHooks | LoginHook | string | undefined) =>
+    typeof h === 'string' ? fs.readFileSync(path.resolve(root, h), 'utf8') : typeof h === 'function' ? h.toString() : h?.login?.toString() ?? null;
+  return hashOf([source(hooks), source(auth)]);
+}
+
 function fileStamp(file: string): string {
   const s = fs.statSync(file);
   return `${s.size}:${s.mtimeMs}`;
@@ -413,7 +423,7 @@ export async function compare(options: CompareOptions = {}): Promise<CompareResu
     importSnapshot(path.resolve(root, dataSnapshot?.convexDir ?? '.'), snapshotFile);
   };
   const cacheKey = (options.cache ?? config.cache ?? !!snapshotFile)
-    ? hashOf({ v: CAPTURE_CACHE_VERSION, viewport, mask, hide, env, network, blockConvexWrites, login: !!login, serve, snapshot: snapshotFile ? fileStamp(snapshotFile) : null })
+    ? hashOf({ v: CAPTURE_CACHE_VERSION, viewport, mask, hide, env, network, blockConvexWrites, login: login ? loginKey(root, options.hooks ?? config.hooks, options.auth ?? config.auth) : null, serve, snapshot: snapshotFile ? fileStamp(snapshotFile) : null })
     : null;
 
   const baseRefName = options.base ?? 'HEAD~1';
@@ -498,7 +508,8 @@ export async function compare(options: CompareOptions = {}): Promise<CompareResu
       closers.push(served.close);
       if (login) {
         await signIn(context, login, [[side, served.url]], log);
-        signedIn = await context.storageState();
+        // IndexedDB too: some auth libraries (Firebase and others) keep the session there.
+        signedIn = await context.storageState({ indexedDB: true });
       }
       return served;
     };
@@ -569,20 +580,16 @@ export async function compare(options: CompareOptions = {}): Promise<CompareResu
       if (!b.image || !a.image || b.failed || a.failed) return { regions: [] as Region[], changedRatio: 0, unstable: 0 };
       const beforePng = fs.readFileSync(b.image);
       const afterPng = fs.readFileSync(a.image);
-      const raw = diffImages(beforePng, afterPng, { minArea: options.minArea });
-      const d = { ...raw, regions: dropShifted(beforePng, afterPng, raw.regions) };
+      const d = diffImages(beforePng, afterPng, { minArea: options.minArea });
       if (!d.regions.length) return { regions: d.regions, changedRatio: 0, unstable: 0 };
       // A recheck that shows much more or less content than the first load caught the page
       // mid-load. Try once more; if it still looks unfinished, keep every changed area.
       const settled = (p: PageCapture) => !p.failed && !!p.image && Math.abs(p.content - a.content) <= Math.max(20, a.content * 0.2);
       let again = await isolated(servedHead.url, route.path, shotFile(i, 'recheck'));
       if (!settled(again)) again = await isolated(servedHead.url, route.path, shotFile(i, 'recheck'));
-      let noise: Region[] = [];
-      if (settled(again) && again.image) {
-        noise = diffImages(fs.readFileSync(a.image), fs.readFileSync(again.image), { minArea: options.minArea }).regions;
-      }
+      const againPng = settled(again) && again.image ? fs.readFileSync(again.image) : null;
       fs.rmSync(shotFile(i, 'recheck'), { force: true });
-      const regions = d.regions.filter((r) => !noise.some((n) => overlaps(r, n)));
+      const regions = dropLoadNoise(beforePng, afterPng, againPng, d.regions, { minArea: options.minArea });
       return { regions, changedRatio: regions.length ? d.changedRatio : 0, unstable: d.regions.length - regions.length };
     });
 

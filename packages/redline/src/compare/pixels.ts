@@ -184,8 +184,10 @@ export function regionHashes(png: Buffer, boxes: Box[]): string[] {
 }
 
 /**
- * Regions whose pixels are the same as before, moved by up to `maxShift` pixels: sub-pixel layout
- * and text placement that differs between loads, not a change. Returns the regions to keep.
+ * Regions whose pixels are the same as before, moved by up to `maxShift` pixels. That is either
+ * sub-pixel placement that differs between loads or a real 1-2px layout change (a padding tweak
+ * moves a card's border and content the same way), so it alone is no reason to drop a region:
+ * see `dropLoadNoise`. Returns the regions that are not just a shift.
  */
 export function dropShifted(before: Buffer, after: Buffer, regions: Region[], maxShift = 2): Region[] {
   if (!regions.length) return regions;
@@ -207,4 +209,19 @@ export function dropShifted(before: Buffer, after: Buffer, regions: Region[], ma
     }
     return true;
   });
+}
+
+/**
+ * Drop changed regions that a second load of head (`again`) shows to be load noise: any region
+ * where `again` differs from `after` (live data, timing), and a shift-only region where `again`
+ * looks like `before` again (sub-pixel jitter). A shift that loads the same way twice is a real
+ * layout change and is kept. Without a settled second load every region is kept.
+ */
+export function dropLoadNoise(before: Buffer, after: Buffer, again: Buffer | null, regions: Region[], options: PixelDiffOptions = {}): Region[] {
+  if (!again || !regions.length) return regions;
+  const noise = diffImages(after, again, options).regions;
+  const moved = dropShifted(before, after, regions);
+  const shifted = regions.filter((r) => !moved.includes(r));
+  const stillChanged = shifted.length ? diffImages(before, again, options).regions : [];
+  return regions.filter((r) => !noise.some((n) => overlaps(r, n)) && (!shifted.includes(r) || stillChanged.some((c) => overlaps(r, c))));
 }
