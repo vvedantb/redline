@@ -33,11 +33,31 @@ export interface PixelDiffOptions {
   minPixels?: number;
   /** Regions kept at most, largest first. Default 20. */
   maxRegions?: number;
+  /**
+   * Soften both images with a 3x3 box blur before comparing, so text drawn at a different
+   * sub-pixel offset between loads does not count as a change. Default true.
+   */
+  blur?: boolean;
 }
 
 const CELL = 8;
 /** Changed cells this many cells apart still join one region. */
 const JOIN = 2;
+
+/** 3x3 box blur of RGBA pixels; edges and alpha are left as they are. */
+function boxBlur(data: Buffer, width: number, height: number): Buffer {
+  const out = Buffer.from(data);
+  for (let y = 1; y < height - 1; y++) {
+    for (let x = 1; x < width - 1; x++) {
+      for (let c = 0; c < 3; c++) {
+        let sum = 0;
+        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) sum += data[((y + dy) * width + x + dx) * 4 + c];
+        out[(y * width + x) * 4 + c] = Math.round(sum / 9);
+      }
+    }
+  }
+  return out;
+}
 
 /** Copy `img` onto a white canvas of `width` x `height`. */
 function pad(img: PNG, width: number, height: number): Buffer {
@@ -131,7 +151,8 @@ export function diffImages(before: Buffer, after: Buffer, options: PixelDiffOpti
   const width = Math.max(a.width, b.width);
   const height = Math.max(a.height, b.height);
   const out = Buffer.alloc(width * height * 4);
-  pixelmatch(pad(a, width, height), pad(b, width, height), out, width, height, {
+  const soften = (img: Buffer) => (options.blur === false ? img : boxBlur(img, width, height));
+  pixelmatch(soften(pad(a, width, height)), soften(pad(b, width, height)), out, width, height, {
     threshold: options.threshold ?? 0.1,
     diffMask: true,
     diffColor: [255, 0, 0],
@@ -160,4 +181,47 @@ export function regionHashes(png: Buffer, boxes: Box[]): string[] {
     }
     return hash.digest('hex').slice(0, 16);
   });
+}
+
+/**
+ * Regions whose pixels are the same as before, moved by up to `maxShift` pixels. That is either
+ * sub-pixel placement that differs between loads or a real 1-2px layout change (a padding tweak
+ * moves a card's border and content the same way), so it alone is no reason to drop a region:
+ * see `dropLoadNoise`. Returns the regions that are not just a shift.
+ */
+export function dropShifted(before: Buffer, after: Buffer, regions: Region[], maxShift = 2): Region[] {
+  if (!regions.length) return regions;
+  const b = PNG.sync.read(before);
+  const a = PNG.sync.read(after);
+  const px = (img: PNG, x: number, y: number) => (x < 0 || y < 0 || x >= img.width || y >= img.height ? -1 : (y * img.width + x) * 4);
+  const differs = (i: number, j: number) => i < 0 || j < 0 || Math.abs(b.data[i] - a.data[j]) + Math.abs(b.data[i + 1] - a.data[j + 1]) + Math.abs(b.data[i + 2] - a.data[j + 2]) > 48;
+  return regions.filter((r) => {
+    const area = r.width * r.height;
+    for (let dy = -maxShift; dy <= maxShift; dy++) {
+      for (let dx = -maxShift; dx <= maxShift; dx++) {
+        if (!dx && !dy) continue;
+        let bad = 0;
+        for (let y = r.y; y < r.y + r.height && bad <= area * 0.01; y++) {
+          for (let x = r.x; x < r.x + r.width; x++) if (differs(px(b, x, y), px(a, x + dx, y + dy))) bad++;
+        }
+        if (bad <= area * 0.01) return false;
+      }
+    }
+    return true;
+  });
+}
+
+/**
+ * Drop changed regions that a second load of head (`again`) shows to be load noise: any region
+ * where `again` differs from `after` (live data, timing), and a shift-only region where `again`
+ * looks like `before` again (sub-pixel jitter). A shift that loads the same way twice is a real
+ * layout change and is kept. Without a settled second load every region is kept.
+ */
+export function dropLoadNoise(before: Buffer, after: Buffer, again: Buffer | null, regions: Region[], options: PixelDiffOptions = {}): Region[] {
+  if (!again || !regions.length) return regions;
+  const noise = diffImages(after, again, options).regions;
+  const moved = dropShifted(before, after, regions);
+  const shifted = regions.filter((r) => !moved.includes(r));
+  const stillChanged = shifted.length ? diffImages(before, again, options).regions : [];
+  return regions.filter((r) => !noise.some((n) => overlaps(r, n)) && (!shifted.includes(r) || stillChanged.some((c) => overlaps(r, c))));
 }

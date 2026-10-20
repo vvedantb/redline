@@ -87,11 +87,28 @@ describe('diffImages', () => {
   it('boxes separate changed areas, top to bottom', () => {
     const a = png(200, 200);
     const b = png(200, 200, (x, y) => (x >= 10 && x < 40 && y >= 120 && y < 140) || (x >= 150 && x < 180 && y >= 20 && y < 50));
-    const d = diffImages(a, b);
+    const d = diffImages(a, b, { blur: false });
     expect(d.regions).toHaveLength(2);
     expect(d.regions[0]).toMatchObject({ x: 144, y: 16 });
     expect(d.regions[1]).toMatchObject({ x: 8, y: 120 });
     expect(d.changedPixels).toBe(30 * 20 + 30 * 30);
+    // The default blur still finds both areas.
+    expect(diffImages(a, b).regions).toHaveLength(2);
+  });
+
+  it('ignores a glyph drawn at a slightly different sub-pixel offset', () => {
+    // Before: a crisp 1px vertical line. After: the same line spread over two columns, as text
+    // rendered half a pixel to the right is.
+    const gray = (shade: (x: number, y: number) => number) => {
+      const img = new PNG({ width: 60, height: 60 });
+      for (let y = 0; y < 60; y++) for (let x = 0; x < 60; x++) img.data.set([shade(x, y), shade(x, y), shade(x, y), 255], (y * 60 + x) * 4);
+      return PNG.sync.write(img);
+    };
+    const inLine = (y: number) => y >= 10 && y < 50;
+    const before = gray((x, y) => (x === 30 && inLine(y) ? 0 : 255));
+    const after = gray((x, y) => ((x === 30 || x === 31) && inLine(y) ? 128 : 255));
+    expect(diffImages(before, after, { blur: false }).regions.length).toBeGreaterThan(0);
+    expect(diffImages(before, after).regions).toEqual([]);
   });
 
   it('compares images of different heights on a white canvas', () => {

@@ -38,6 +38,8 @@ export interface DiscoverOptions {
   crawlBudget?: number;
   /** Pages the crawl loads at once. Default 4. */
   concurrency?: number;
+  /** Stop the crawl once each of these route patterns has an example URL. */
+  targets?: string[];
 }
 
 export type RoutePath = (appPath: string) => string;
@@ -122,6 +124,7 @@ async function fetchSitemap(baseUrl: string): Promise<string[]> {
 }
 
 interface CrawlOptions {
+  targets?: string[];
   patterns: string[];
   routePath: RoutePath;
   budget: number;
@@ -133,7 +136,7 @@ interface CrawlOptions {
  * only the first page of each dynamic route, so lists lead to one example of each detail page
  * without loading every row. Stops after `budget` page loads.
  */
-async function crawl(context: BrowserContext, baseUrl: string, { patterns, routePath, budget, concurrency }: CrawlOptions): Promise<string[]> {
+async function crawl(context: BrowserContext, baseUrl: string, { targets, patterns, routePath, budget, concurrency }: CrawlOptions): Promise<string[]> {
   const prefix = baseUrl.replace(/\/$/, '');
   const found = new Set<string>(['/']);
   const followed = new Set<string>();
@@ -155,6 +158,11 @@ async function crawl(context: BrowserContext, baseUrl: string, { patterns, route
       next.push(link);
     }
     frontier = next;
+    if (targets?.length) {
+      const covered = new Set([...found].map((p) => patternFor(p, patterns, routePath)));
+      for (const pattern of deriveExamples(found, patterns, routePath).keys()) covered.add(pattern);
+      if (targets.every((t) => covered.has(t))) break;
+    }
   }
   return [...found];
 }
@@ -213,7 +221,7 @@ export async function discoverRoutes(options: DiscoverOptions): Promise<Discover
     const browser = context ? null : await launchBrowser(options.root, options.browser);
     try {
       context ??= await stableContext(browser!);
-      const crawlOptions = { patterns, routePath, budget: options.crawlBudget ?? DEFAULT_CRAWL_BUDGET, concurrency: options.concurrency ?? DEFAULT_CONCURRENCY };
+      const crawlOptions = { targets: options.targets, patterns, routePath, budget: options.crawlBudget ?? DEFAULT_CRAWL_BUDGET, concurrency: options.concurrency ?? DEFAULT_CONCURRENCY };
       for (const p of await crawl(context, options.baseUrl, crawlOptions)) add(p, 'link');
     } finally {
       await browser?.close();

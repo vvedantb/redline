@@ -1,6 +1,9 @@
 export { compare, diffBetween, readConfig, changedBetween, CONFIG_FILE } from './compare/compare';
 export type { CompareHooks, CompareOptions, CompareResult, LoginContext, LoginHook, NetworkPolicy, RedlineConfig, ServeMode } from './compare/compare';
 export { groupSharedChanges } from './compare/groups';
+export { renderSummary, SUMMARY_MARKER } from './compare/summary';
+export type { SummaryOptions } from './compare/summary';
+export { postPrComment } from './github';
 export type { SharedChange } from './compare/groups';
 export { discoverRoutes, matchPattern, patternFor, parseSitemap, DEFAULT_MAX_ROUTES } from './routes/discover';
 export type { DiscoverOptions, DiscoverResult, DiscoveredRoute, SkippedRoute, RouteOrigin } from './routes/discover';

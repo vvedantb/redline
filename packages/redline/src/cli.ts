@@ -1,6 +1,8 @@
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { compare, type CompareOptions } from './compare/compare';
+import { renderSummary } from './compare/summary';
+import { postPrComment } from './github';
 import { restore, snapshot, type RestoreOptions, type SnapshotOptions } from './convex';
 
 const USAGE = `Usage:
@@ -26,13 +28,18 @@ Options:
   --chrome <path>      Chrome or Chromium binary to use
   --dev                compare: run each commit's dev server instead of a production build
   --concurrency <n>    compare: pages loaded at once (default: 4)
+  --affected           compare: capture only pages the changed files reach, plus a sample
+  --sample <n>         compare: other pages captured with --affected (default: 5)
+  --comment <pr|auto>  compare: post the summary on a pull request (GitHub CLI), updating
+                       Redline's earlier comment there. auto: the current branch's PR
+  --report-url <url>   compare: where the report is published, for links in the comment
   --replace            restore: replace existing data in the imported tables
   --yes                restore: skip the confirmation (implied by --replace or a non-interactive terminal)
   -h, --help           Show this help`;
 
 export type Parsed =
   | { command: 'help' }
-  | { command: 'compare'; options: CompareOptions }
+  | { command: 'compare'; options: CompareOptions; comment?: { pr: string; reportUrl?: string } }
   | { command: 'snapshot'; options: SnapshotOptions }
   | { command: 'restore'; options: RestoreOptions };
 
@@ -49,6 +56,10 @@ export function parseCli(argv: string[]): Parsed {
       chrome: { type: 'string' },
       dev: { type: 'boolean' },
       concurrency: { type: 'string' },
+      affected: { type: 'boolean' },
+      sample: { type: 'string' },
+      comment: { type: 'string' },
+      'report-url': { type: 'string' },
       replace: { type: 'boolean' },
       yes: { type: 'boolean' },
       help: { type: 'boolean', short: 'h' },
@@ -84,12 +95,20 @@ export function parseCli(argv: string[]): Parsed {
   }
   if (values.chrome) options.browser = { executablePath: values.chrome };
   if (values.dev) options.serve = 'dev';
+  if (values.affected) options.scope = 'affected';
+  if (values.sample !== undefined) {
+    const n = Number(values.sample);
+    if (!Number.isInteger(n) || n < 0) throw new Error('--sample must be a whole number');
+    options.sample = n;
+  }
+  if (values.comment !== undefined && !/^(\d+|auto)$/.test(values.comment)) throw new Error('--comment takes a pull request number or auto');
   if (values.concurrency !== undefined) {
     const n = Number(values.concurrency);
     if (!Number.isInteger(n) || n < 1) throw new Error('--concurrency must be a positive whole number');
     options.concurrency = n;
   }
-  return { command: 'compare', options };
+  const comment = values.comment ? { pr: values.comment, ...(values['report-url'] ? { reportUrl: values['report-url'] } : {}) } : undefined;
+  return comment ? { command: 'compare', options, comment } : { command: 'compare', options };
 }
 
 export async function main(argv = process.argv.slice(2)): Promise<number> {
@@ -124,6 +143,10 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     }
     for (const n of report.notices) console.log(`Note: ${n}`);
     console.log(`Report: ${reportFile}`);
+    if (parsed.comment) {
+      const url = postPrComment(parsed.comment.pr, renderSummary(report, { reportUrl: parsed.comment.reportUrl }), parsed.options.root ?? process.cwd());
+      console.log(`Comment: ${url}`);
+    }
     return 0;
   } catch (err) {
     console.error(`redline: ${err instanceof Error ? err.message : String(err)}`);
