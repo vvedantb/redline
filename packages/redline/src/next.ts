@@ -18,6 +18,8 @@ export interface RedlineNextOptions {
   apiRoute?: string;
   baselineFile?: string;
   extensions?: string[];
+  /** Tag component elements (`<Button>`, `<Tabs.Tab>`) as well as host elements. Default `true`. */
+  tagComponents?: boolean;
 }
 
 export interface RedlineNextHistoryOptions extends RedlineHistoryOptions {
@@ -56,6 +58,11 @@ function isEnabled(options: RedlineNextOptions): boolean {
 /** Absolute path to the webpack loader that adds `data-redline-source`. */
 export const loaderPath = path.join(__dirname, 'loader.cjs');
 
+/** The loader entry for a webpack or Turbopack rule. Options must stay JSON for Turbopack. */
+function loaderEntry(root: string, tagComponents = true) {
+  return { loader: loaderPath, options: { root, tagComponents } };
+}
+
 /** Turbopack glob for the files the loader tags. */
 export const TURBOPACK_GLOB = '**/*.{tsx,jsx}';
 
@@ -82,8 +89,8 @@ export function usesLegacyTurboKey(version: [number, number] | null): boolean {
  * If the user already has a rule for the same glob, the loader is appended to its
  * `loaders` so it runs first, on the original JSX.
  */
-export function mergeTurbopackRules(rules: AnyConfig | undefined, root: string): AnyConfig {
-  const loader = { loader: loaderPath, options: { root } };
+export function mergeTurbopackRules(rules: AnyConfig | undefined, root: string, tagComponents = true): AnyConfig {
+  const loader = loaderEntry(root, tagComponents);
   const existing = rules?.[TURBOPACK_GLOB];
   if (existing === undefined) return { ...(rules ?? {}), [TURBOPACK_GLOB]: { loaders: [loader] } };
   if (existing && Array.isArray(existing.loaders)) {
@@ -96,7 +103,7 @@ export function mergeTurbopackRules(rules: AnyConfig | undefined, root: string):
 /**
  * Wrap a Next.js config.
  *
- * In dev it tags JSX host elements under both bundlers: a Turbopack rule (`turbopack.rules`
+ * In dev it tags JSX elements under both bundlers: a Turbopack rule (`turbopack.rules`
  * on Next 15.3+, `experimental.turbo.rules` before that) and a webpack pre-loader for
  * `next dev --webpack`. Both use the same loader. It also sets `NEXT_PUBLIC_REDLINE=1`
  * and rewrites `/__redline/:path*` to your API route, History previews included.
@@ -119,10 +126,13 @@ export function withRedline<T extends AnyConfig>(
     ? {
         experimental: {
           ...nextConfig.experimental,
-          turbo: { ...nextConfig.experimental?.turbo, rules: mergeTurbopackRules(nextConfig.experimental?.turbo?.rules, root) },
+          turbo: {
+            ...nextConfig.experimental?.turbo,
+            rules: mergeTurbopackRules(nextConfig.experimental?.turbo?.rules, root, options.tagComponents),
+          },
         },
       }
-    : { turbopack: { ...nextConfig.turbopack, rules: mergeTurbopackRules(nextConfig.turbopack?.rules, root) } };
+    : { turbopack: { ...nextConfig.turbopack, rules: mergeTurbopackRules(nextConfig.turbopack?.rules, root, options.tagComponents) } };
 
   return {
     ...nextConfig,
@@ -137,7 +147,7 @@ export function withRedline<T extends AnyConfig>(
           test: TRANSFORM_FILE,
           exclude: /node_modules/,
           enforce: 'pre',
-          use: [{ loader: loaderPath, options: { root: ctx?.dir ?? process.cwd() } }],
+          use: [loaderEntry(ctx?.dir ?? process.cwd(), options.tagComponents)],
         });
       }
       return result;

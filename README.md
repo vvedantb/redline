@@ -201,7 +201,7 @@ Redline also ships a dev-only overlay. You pin a baseline commit; after an agent
 
 ### How it works
 
-1. A transform adds `data-redline-source="src/Hero.tsx:4-9"` (file, start line, end line) to every JSX host element (`div`, `h1`, `button` and so on) in dev.
+1. A transform adds `data-redline-source="src/Hero.tsx:4-9"` (file, start line, end line) to every JSX element in dev: host elements (`div`, `h1`, `button` and so on) and component elements (`<ActionIcon>`, `<Tabs.Tab>`). Component libraries such as Mantine, MUI and Tabler pass `data-*` props through to the DOM, so the call site in your code is outlined. `Fragment`, `Suspense`, `StrictMode`, `Profiler` and names that end in `Provider` or `Consumer` are not tagged, because they render no element of their own.
 2. The dev server serves `/__redline/*`. `GET /__redline/diff` runs `git diff <baseline>` over `tsx`, `jsx`, `ts`, `js` and `css` files, adds untracked files, and returns parsed hunks.
 3. `<RedlineOverlay />` fetches the diff, finds tagged elements, and maps each changed line to the innermost element whose source range contains it. It draws a fixed-position outline over each match.
 4. Each outline has a small label button. Click it to open a side panel with the file path, line and hunk text.
@@ -250,6 +250,7 @@ Plugin options:
 | `enabled` | `true` in `vite dev`, `false` in `vite build` | `false` turns off tagging and makes `/__redline/*` report `enabled: false`. `true` also tags production builds and serves the endpoints from `vite preview`. |
 | `baselineFile` | `<root>/.redline/baseline.json` | Where the pinned baseline is stored. |
 | `extensions` | `['tsx', 'jsx', 'ts', 'js', 'css']` | File types included in git diffs. |
+| `tagComponents` | `true` | Also tag component elements, not only host elements. Set `false` if your components fail or warn on an unknown `data-redline-source` prop. |
 | `history` | `{ maxBuilds: 5, thumbnails: true }` | History builds. `maxBuilds` is how many ready builds stay on disk. `thumbnails: false` skips Playwright screenshots. `networkFixtures` is the fixtures file for the [read-only network layer](#history-network-read-only) (default `.redline/network-fixtures.json`). `false` turns History builds off. |
 
 Set `REDLINE=0` in the environment to turn Redline off whatever `enabled` says. History builds use this.
@@ -306,7 +307,7 @@ export function DevTools() {
 }
 ```
 
-`withRedline(config, options)` accepts `enabled`, `apiRoute` (default `/api/redline`), `baselineFile` and `extensions`. When `NODE_ENV` is `production` and `enabled` is not `true`, it returns your config unchanged and the route handler reports `enabled: false`. `REDLINE=0` in the environment does the same, even with `enabled: true`. In dev it also sets `NEXT_PUBLIC_REDLINE=1`.
+`withRedline(config, options)` accepts `enabled`, `apiRoute` (default `/api/redline`), `baselineFile`, `extensions` and `tagComponents` (default `true`, as for Vite). When `NODE_ENV` is `production` and `enabled` is not `true`, it returns your config unchanged and the route handler reports `enabled: false`. `REDLINE=0` in the environment does the same, even with `enabled: true`. In dev it also sets `NEXT_PUBLIC_REDLINE=1`.
 
 The Next.js integration is covered by unit tests. The E2E suite runs against the Vite demo.
 
@@ -560,8 +561,9 @@ Call `refreshRedline()` to make the overlay refetch straight away. It otherwise 
 - A changed or added line maps to the innermost tagged element whose source range contains it.
 - A pure deletion maps to the innermost element that contains the lines on both sides of it.
 - If an element is entirely new, its tagged children are folded into it, so it gets one outline.
-- Lines outside any JSX host element (imports, helpers, types) are ignored. CSS changes are returned by the diff endpoint but are not outlined, because CSS lines do not map to elements.
-- Only host elements are tagged. A change to a component's props at the call site maps to the nearest host element around the call.
+- Lines outside any tagged JSX element (imports, helpers, types) are ignored. CSS changes are returned by the diff endpoint but are not outlined, because CSS lines do not map to elements.
+- A change to a component's props at the call site maps to the DOM element that the component renders, if the component passes `data-*` props through. If it does not, or `tagComponents` is `false`, the change maps to the nearest tagged element around the call.
+- The attribute goes after every other attribute, so the innermost JSX wins. A component that spreads its props onto a `div` keeps the `div`'s own location.
 
 ## Run the demo
 
@@ -617,7 +619,7 @@ docs/              Convex local snapshots
 
 ## Overlay limits
 
-- Only JSX host elements are tagged. Elements created with `React.createElement` or rendered by third-party components in `node_modules` are not.
+- Only JSX in your own files is tagged. Elements created with `React.createElement` are not. An element rendered by a component in `node_modules` is outlined only when that component passes `data-*` props to it.
 - History builds need your dependencies to build that commit. In a monorepo where the app imports a workspace package that is built from source (like this repo's demo), linking `node_modules` uses the current build of that package, and a fresh install may fail if the package's build output is not committed.
 - History builds of client-side routers need the router to respect Vite's `base` (`import.meta.env.BASE_URL`).
 - Vite History builds inline your current public `VITE_*` values, not the ones at that commit. Env files are copied (filtered) from your working tree, not read from history. An env file committed at that commit is used as committed, without filtering.

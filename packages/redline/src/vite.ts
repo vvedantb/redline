@@ -21,6 +21,8 @@ export interface RedlineViteOptions {
   baselineFile?: string;
   /** File extensions included in git diffs. Default tsx, jsx, ts, js, css. */
   extensions?: string[];
+  /** Tag component elements (`<Button>`, `<Tabs.Tab>`) as well as host elements. Default `true`. */
+  tagComponents?: boolean;
   /** Per-commit production builds for the History panel. `false` turns them off. */
   history?: RedlineHistoryOptions | false;
 }
@@ -85,7 +87,7 @@ export function redline(options: RedlineViteOptions = {}): Plugin {
     },
     transform(code, id) {
       if (!active || !shouldTransform(id)) return null;
-      return transformSource(code, id, { root });
+      return transformSource(code, id, { root, tagComponents: options.tagComponents });
     },
   };
 }

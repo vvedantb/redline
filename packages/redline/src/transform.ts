@@ -1,12 +1,17 @@
 import path from 'node:path';
 import { parse } from '@babel/parser';
-import type { Node } from '@babel/types';
+import type { JSXOpeningElement, Node } from '@babel/types';
 import MagicString from 'magic-string';
 import { SOURCE_ATTR, formatSource, normalizePath } from './source';
 
 export interface TransformOptions {
   /** Project root; tagged paths are relative to it. */
   root: string;
+  /**
+   * Also tag component elements (`<Button>`, `<Tabs.Tab>`). Most UI libraries forward
+   * `data-*` props to the DOM. Default `true`. Set `false` if your components reject unknown props.
+   */
+  tagComponents?: boolean;
 }
 
 export interface TransformResult {
@@ -15,6 +20,18 @@ export interface TransformResult {
 }
 
 const SKIP_TAGS = new Set(['html', 'head', 'body', 'script', 'style', 'meta', 'link', 'title', 'template']);
+
+/** React built-ins that render no DOM element of their own. Matched on the last name part, so `React.Fragment` too. */
+const SKIP_COMPONENTS = new Set(['Fragment', 'Suspense', 'StrictMode', 'Profiler']);
+
+/** Whether to tag a JSX element. Host tags are lowercase identifiers; components are capitalised or `a.B`. */
+function shouldTag(name: JSXOpeningElement['name'], tagComponents: boolean): boolean {
+  if (name.type === 'JSXNamespacedName') return false;
+  if (name.type === 'JSXIdentifier' && /^[a-z]/.test(name.name)) return !SKIP_TAGS.has(name.name);
+  if (!tagComponents) return false;
+  const last = name.type === 'JSXIdentifier' ? name.name : name.property.name;
+  return !SKIP_COMPONENTS.has(last) && !/(Provider|Consumer)$/.test(last);
+}
 
 export const TRANSFORM_FILE = /\.[jt]sx$/;
 
@@ -41,13 +58,16 @@ function walk(node: Node, visit: (n: Node) => void): void {
 }
 
 /**
- * Add `data-redline-source="file:start-end"` to every JSX host element (lowercase tag).
+ * Add `data-redline-source="file:start-end"` to every JSX host element and, unless
+ * `tagComponents` is false, every component element. The attribute goes last, so it
+ * overrides one passed in through a spread: the innermost JSX that renders a DOM node wins.
  * Returns null when the file has nothing to tag.
  */
 export function transformSource(code: string, id: string, options: TransformOptions): TransformResult | null {
   const filename = id.split('?')[0];
   if (!TRANSFORM_FILE.test(filename)) return null;
   const rel = normalizePath(path.relative(options.root, filename));
+  const tagComponents = options.tagComponents ?? true;
 
   let ast;
   try {
@@ -66,15 +86,15 @@ export function transformSource(code: string, id: string, options: TransformOpti
   walk(ast.program, (node) => {
     if (node.type !== 'JSXElement' || !node.loc) return;
     const opening = node.openingElement;
-    if (opening.name.type !== 'JSXIdentifier') return;
-    const tag = opening.name.name;
-    if (!/^[a-z]/.test(tag) || SKIP_TAGS.has(tag)) return;
+    if (!shouldTag(opening.name, tagComponents)) return;
     const already = opening.attributes.some(
       (a) => a.type === 'JSXAttribute' && a.name.type === 'JSXIdentifier' && a.name.name === SOURCE_ATTR,
     );
-    if (already || opening.name.end == null) return;
+    // After the last attribute, else after the tag name and any type arguments (`<Select<T>>`).
+    const at = (opening.attributes.at(-1) ?? opening.typeArguments ?? opening.typeParameters ?? opening.name).end;
+    if (already || at == null) return;
     const value = formatSource(rel, node.loc.start.line, node.loc.end.line);
-    s.appendLeft(opening.name.end, ` ${SOURCE_ATTR}="${value.replace(/"/g, '&quot;')}"`);
+    s.appendLeft(at, ` ${SOURCE_ATTR}="${value.replace(/"/g, '&quot;')}"`);
     changed = true;
   });
 

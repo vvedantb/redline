@@ -52,7 +52,7 @@ describe('withRedline', () => {
   it('adds a Turbopack rule that reuses the webpack loader', () => {
     const config = withRedline({}, { enabled: true });
     expect(config.turbopack!.rules[TURBOPACK_GLOB]).toEqual({
-      loaders: [{ loader: loaderPath, options: { root: process.cwd() } }],
+      loaders: [{ loader: loaderPath, options: { root: process.cwd(), tagComponents: true } }],
     });
     expect(config.experimental).toBeUndefined();
   });
@@ -77,7 +77,14 @@ describe('withRedline', () => {
 
   it('appends to a user rule for the same glob so Redline runs first', () => {
     const rules = mergeTurbopackRules({ [TURBOPACK_GLOB]: { loaders: ['other'] } }, '/app');
-    expect(rules[TURBOPACK_GLOB].loaders).toEqual(['other', { loader: loaderPath, options: { root: '/app' } }]);
+    expect(rules[TURBOPACK_GLOB].loaders).toEqual(['other', { loader: loaderPath, options: { root: '/app', tagComponents: true } }]);
+  });
+
+  it('passes tagComponents: false to both the Turbopack and webpack loaders', () => {
+    const config = withRedline({}, { enabled: true, tagComponents: false });
+    expect(config.turbopack!.rules[TURBOPACK_GLOB].loaders[0].options).toEqual({ root: process.cwd(), tagComponents: false });
+    const out = config.webpack!({ module: { rules: [] } }, { dev: true, dir: '/app' });
+    expect(out.module.rules[0].use[0].options).toEqual({ root: '/app', tagComponents: false });
   });
 
   it('picks the Turbopack config key by Next version', () => {
