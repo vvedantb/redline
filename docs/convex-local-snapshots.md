@@ -5,7 +5,7 @@ Redline wraps the Convex CLI so a local Convex deployment can be saved and resto
 
 ```
 redline snapshot [--root <dir>] [--out <file>]
-redline restore  [--root <dir>] [--replace] [--yes] <file>
+redline restore  [--root <dir>] [--replace] [--yes] [--allow-prod] <file>
 ```
 
 `snapshot` runs `npx convex export --include-file-storage --path <file>` in `--root` (default:
@@ -13,6 +13,36 @@ current directory) and writes the zip to `.redline/convex-snapshot.zip`. It also
 `.redline/convex-snapshot.json` with the time, the command and a pointer to this page.
 `restore` runs `npx convex import [--replace] [--yes] <file>`. Both commands act on the deployment the
 Convex CLI has selected. Neither copies database files.
+
+## Production guard
+
+`redline restore` and `redline compare` with `dataSnapshot` check the target deployment before
+they run `npx convex import`. Redline reads, in this order, from the environment first and then
+from `.env.local` and `.env` in the directory the import runs in (`--root`, or
+`dataSnapshot.convexDir`):
+
+1. `CONVEX_DEPLOY_KEY`. Only the part before `|` is read (`prod:<name>`, `dev:<name>`,
+   `preview:<name>`). The secret after `|` is never printed or stored.
+2. `CONVEX_DEPLOYMENT`, such as `dev:happy-otter-123`, `local:<name>` or `anonymous:<name>`.
+3. A Convex URL: `CONVEX_SELF_HOSTED_URL`, `CONVEX_URL`, `VITE_CONVEX_URL` or
+   `NEXT_PUBLIC_CONVEX_URL`. `localhost` and `127.0.0.1` are local. Any other host, such as
+   `*.convex.cloud`, is unknown, because the URL does not say whether it is prod or dev.
+
+Before each import Redline prints the target:
+
+```
+redline: replacing data in Convex deployment dev:happy-otter-123 (from CONVEX_DEPLOYMENT in .env.local)
+```
+
+It refuses, and runs no import, when the target is `prod` or unknown (a cloud URL alone, a deploy
+key without a deployment name, or nothing found). Unknown is refused because it may be prod. To
+import anyway, pass `--allow-prod` to `restore` or `compare`, or set `"allowProd": true` in
+`dataSnapshot` in `redline.config.json`. For an unknown target, the better fix is to set
+`CONVEX_DEPLOYMENT` (for example `local:<name>`) in `.env.local`. `compare` checks the target
+before it builds anything.
+
+This guard reads what Redline can see. A `--deployment` flag or other Convex CLI settings that
+Redline does not read are not checked.
 
 ## Sources
 

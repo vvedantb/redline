@@ -8,7 +8,7 @@ import { restore, snapshot, type RestoreOptions, type SnapshotOptions } from './
 const USAGE = `Usage:
   redline compare [base] [head] [options]
   redline snapshot [--root <dir>] [--out <file>]
-  redline restore [--root <dir>] [--replace] [--yes] <file>
+  redline restore [--root <dir>] [--replace] [--yes] [--allow-prod] <file>
 
 compare builds both commits, screenshots every page, and writes a report of what changed:
 route changes, the PR diff (unified and split), and before/after pages. base defaults to
@@ -17,6 +17,11 @@ HEAD~1, head to HEAD. Set TYPESAFE_API_KEY to link changed areas to files with J
 snapshot exports the selected Convex deployment (with file storage) to a zip with
 \`npx convex export\`. restore imports a zip with \`npx convex import\`. The backend must be
 running. See docs/convex-local-snapshots.md.
+
+Before an import (restore, or compare with dataSnapshot) Redline prints the target deployment,
+read from CONVEX_DEPLOY_KEY, then CONVEX_DEPLOYMENT, then a Convex URL (environment first,
+then .env.local and .env). It refuses a prod deployment, or one it cannot identify (a
+*.convex.cloud URL alone), unless --allow-prod or dataSnapshot.allowProd is set.
 
 Options:
   --root <dir>         App directory (default: current directory)
@@ -35,6 +40,7 @@ Options:
   --report-url <url>   compare: where the report is published, for links in the comment
   --replace            restore: replace existing data in the imported tables
   --yes                restore: skip the confirmation (implied by --replace or a non-interactive terminal)
+  --allow-prod         compare, restore: import into a prod deployment, or one Redline cannot identify
   -h, --help           Show this help`;
 
 export type Parsed =
@@ -62,6 +68,7 @@ export function parseCli(argv: string[]): Parsed {
       'report-url': { type: 'string' },
       replace: { type: 'boolean' },
       yes: { type: 'boolean' },
+      'allow-prod': { type: 'boolean' },
       help: { type: 'boolean', short: 'h' },
     },
   });
@@ -75,7 +82,7 @@ export function parseCli(argv: string[]): Parsed {
     }
     if (!base) throw new Error('restore needs a snapshot file: redline restore <file>');
     if (head) throw new Error(`Unexpected argument: ${head}`);
-    return { command, options: { root, file: path.resolve(base), replace: values.replace, yes: values.yes } };
+    return { command, options: { root, file: path.resolve(base), replace: values.replace, yes: values.yes, allowProd: values['allow-prod'] } };
   }
   if (command !== 'compare') throw new Error(`Unknown command: ${command}`);
   if (extra.length) throw new Error(`Unexpected argument: ${extra[0]}`);
@@ -95,6 +102,7 @@ export function parseCli(argv: string[]): Parsed {
   }
   if (values.chrome) options.browser = { executablePath: values.chrome };
   if (values.dev) options.serve = 'dev';
+  if (values['allow-prod']) options.allowProd = true;
   if (values.affected) options.scope = 'affected';
   if (values.sample !== undefined) {
     const n = Number(values.sample);
