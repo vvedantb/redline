@@ -140,7 +140,7 @@ export async function restore(options: RestoreOptions): Promise<void> {
   const root = path.resolve(options.root ?? process.cwd());
   const file = path.resolve(options.file);
   if (!fs.existsSync(file)) throw new Error(`Snapshot not found: ${file}`);
-  const line = checkConvexTarget(readConvexTarget(root), { allowProd: options.allowProd, replace: options.replace });
+  (options.log ?? console.log)(checkConvexTarget(readConvexTarget(root), { allowProd: options.allowProd, replace: options.replace }));
   const tty = Boolean(process.stdin.isTTY);
   let yes = options.yes;
   if (tty && !yes && !options.replace) {
@@ -150,6 +150,5 @@ export async function restore(options: RestoreOptions): Promise<void> {
     if (!/^y(es)?$/i.test(answer.trim())) throw new Error('Import cancelled.');
     yes = true;
   }
-  (options.log ?? console.log)(line);
   convex(root, convexImportArgs(file, { replace: options.replace, yes, tty }));
 }
