@@ -293,6 +293,7 @@ If you are upgrading, rename `app/api/redline/[action]` to `app/api/redline/[...
 | Option | Default | What it does |
 | --- | --- | --- |
 | `root` | `process.cwd()` | Project root. `.redline/` lives here. Under `next dev` this is the app directory. |
+| `appDir` | `history.appDir`, else `root` | The Next.js app, relative to `root`. Changed pages reads its routes and `redline.config.json` here, and History builds it. Set it in a monorepo where `root` is the repository top level. It works with `history: false`. |
 | `history` | `{ maxBuilds: 5, thumbnails: true }` | History builds. `appDir` is the Next.js app relative to `root`, for a monorepo where `root` is the repository top level. `maxBuilds`, `thumbnails` and `networkFixtures` work as for Vite. `false` turns History builds off, and the build endpoints answer `501`. |
 
 Render the overlay from a client component:
@@ -391,7 +392,7 @@ A floating toolbar sits bottom-left by default. It shows how many regions change
 
 - a drag handle (⠿). Drag to move the toolbar. Double-click to put it back bottom-left.
 - **Hide outlines** / **Show outlines**. This hides the outlines but keeps the toolbar, so you can turn them back on.
-- **Changed pages (N)**, which opens the list of pages the change reaches. It shows once a baseline is pinned.
+- **Changed pages (N)**, which opens the list of pages the change reaches. It shows once a baseline is pinned. While the list loads, or if it fails, it reads **Changed pages (…)** and the panel shows the status or error.
 - **History**, which opens the commit history panel.
 
 The position and outline visibility are saved in `localStorage` under `redline:toolbar`. This is separate from `redlineDisabled`: that flag, and the other flags below, remove the whole overlay, toolbar included.
@@ -401,21 +402,21 @@ The position and outline visibility are saved in `localStorage` under `redline:t
 Reviewers who open the dev or preview link do not need the PR diff to find what to look at. **Changed pages (N)** lists every page that the changed files reach:
 
 1. `GET /__redline/pages` takes the same changed and deleted files as `/__redline/diff` (vs the pinned baseline, or `?baseline=<ref>`). It runs them through the same import-graph trace as `compare`'s "Likely from" (`affectedRoutes`).
-2. Each page links to its URL, in the same tab. A static route links to itself. A dynamic route such as `/domcare/[id]` links to the first `seeds` entry in `redline.config.json` that matches it. With no matching seed it is listed without a link, with a note that it needs an example URL.
+2. Each page links to its URL, in the same tab. A static route links to itself. A dynamic route such as `/blog/[slug]` links to the first `seeds` entry in `redline.config.json` that matches it. With no matching seed it is listed without a link, with a note that it needs an example URL. Only seeds that are same-origin paths become links: a seed that starts with `//` or `/\`, or has a scheme such as `https:`, is skipped.
 3. Pages whose page file was deleted are listed as **Removed**, without a link.
 4. Routes or URLs in `exclude` are left out.
 5. Pages whose own file changed come first, then pages by import depth, then removed pages. Each row shows the confidence and the closest changed file. The page you are on is marked "this page".
 
 ```json
 {
-  "seeds": ["/domcare/123"],
+  "seeds": ["/blog/hello"],
   "exclude": ["/auth/callback"]
 }
 ```
 
-The trace can take 0.2 to 0.5 s on a large app, so the result is cached by baseline, `HEAD`, the list of changed files and the config. The overlay asks again only when the list of changed files changes. Only file-level changes count: an edit that adds an import to a file that was already changed does not refresh the list until another file changes. **Refresh** in the panel skips the cache (`?fresh=1`).
+The trace can take 0.2 to 0.5 s on a large app, so the result is cached by baseline, `HEAD`, the list of changed files and the config. The overlay asks again only when the list of changed files changes. Only file-level changes count: an edit that adds an import to a file that was already changed does not refresh the list until another file changes. **Refresh** in the panel skips the cache (`?fresh=1`). If answers arrive out of order, only the latest request is shown.
 
-Links do not include a Next.js `basePath` or a Vite `base`. In a monorepo where `createRedlineHandler({ root })` is the repository top, set `history.appDir` so routes and `redline.config.json` are read from the app.
+Links do not include a Next.js `basePath` or a Vite `base`. In a monorepo where `createRedlineHandler({ root })` is the repository top, set `appDir` (or `history.appDir`) so routes and `redline.config.json` are read from the app.
 
 #### History builds
 

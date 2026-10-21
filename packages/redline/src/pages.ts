@@ -59,6 +59,12 @@ const depth = (p: ChangedPage) => p.sources[0]?.depth ?? Infinity;
 /** A seed's path, without query or hash, for matching against a route pattern. */
 const seedPath = (seed: string) => seed.split(/[?#]/)[0] || '/';
 
+/**
+ * A seed the overlay may use as a link: a same-origin path. `//host`, `/\host` (browsers read
+ * both as protocol-relative) and `https:`-style URLs are never linked.
+ */
+export const isLinkableSeed = (seed: string) => /^\/(?![/\\])/.test(seed);
+
 export interface ChangedPagesResult {
   pages: ChangedPage[];
   unplaced: string[];
@@ -72,7 +78,7 @@ export function changedPages(appDir: string, files: { changed: string[]; deleted
   const result = affectedRoutes({ root: appDir, changedFiles: files.changed, deletedFiles: files.deleted });
   const entry = (r: AffectedRoute, status: ChangedPage['status']): ChangedPage => {
     const dynamic = isDynamicRoute(r.route);
-    const url = status === 'removed' ? null : dynamic ? config.seeds.find((s) => matchPattern(r.route, seedPath(s))) ?? null : r.route;
+    const url = status === 'removed' ? null : dynamic ? config.seeds.find((s) => isLinkableSeed(s) && matchPattern(r.route, seedPath(s))) ?? null : r.route;
     return { route: r.route, status, url, needsExample: status === 'changed' && dynamic && url === null, confidence: r.confidence, reason: r.reason, sources: r.sources };
   };
   const excluded = new Set(config.exclude);

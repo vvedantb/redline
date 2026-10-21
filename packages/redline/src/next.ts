@@ -31,6 +31,11 @@ export interface RedlineNextHistoryOptions extends RedlineHistoryOptions {
 export interface RedlineHandlerOptions extends RedlineNextOptions {
   /** Project root. `.redline/` lives here. Default `process.cwd()`, which is the app directory under `next dev`. */
   root?: string;
+  /**
+   * The Next.js app, relative to `root`: routes and `redline.config.json` are read here, and History
+   * builds it. Default `history.appDir`, then `root`. Set it when `root` is the top of a monorepo.
+   */
+  appDir?: string;
   /** Per-commit History builds (`output: 'standalone'`). `false` turns them off. */
   history?: RedlineNextHistoryOptions | false;
 }
@@ -155,8 +160,12 @@ declare global {
   var __redlineBuilds: Map<string, BuildManager> | undefined;
 }
 
-function sharedBuilds(root: string, history: RedlineNextHistoryOptions): BuildManager {
-  const configDir = path.resolve(root, history.appDir ?? '.');
+/** The app directory, absolute: `appDir`, else `history.appDir`, else `root`. */
+function handlerAppDir(options: Pick<RedlineHandlerOptions, 'appDir' | 'history'>, root: string): string {
+  return path.resolve(root, options.appDir ?? (options.history || undefined)?.appDir ?? '.');
+}
+
+function sharedBuilds(root: string, configDir: string, history: RedlineNextHistoryOptions): BuildManager {
   const key = `${path.resolve(root)}\0${configDir}`;
   const registry = (globalThis.__redlineBuilds ??= new Map());
   let builds = registry.get(key);
@@ -253,13 +262,14 @@ export function createRedlineHandler(options: RedlineHandlerOptions = {}) {
   const serverOptions = (): RedlineServerOptions => {
     const root = options.root ?? process.cwd();
     const enabled = isEnabled(options);
+    const appDir = handlerAppDir(options, root);
     return {
       root,
-      appDir: path.resolve(root, (options.history || undefined)?.appDir ?? '.'),
+      appDir,
       baselineFile: options.baselineFile,
       extensions: options.extensions ?? DEFAULT_EXTENSIONS,
       enabled,
-      builds: enabled && options.history !== false ? sharedBuilds(root, options.history ?? {}) : undefined,
+      builds: enabled && options.history !== false ? sharedBuilds(root, appDir, options.history ?? {}) : undefined,
     };
   };
 

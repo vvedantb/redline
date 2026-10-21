@@ -3,7 +3,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { isCurrentPage } from '../src/client/toolbar';
+import { latestOnly } from '../src/client/latest';
+import { isCurrentPage, pagesButtonLabel } from '../src/client/toolbar';
+import { isLinkableSeed } from '../src/pages';
 import { matchPattern } from '../src/routes/pattern';
 import { handleRedlineRequest, pinBaseline, type RedlineServerOptions } from '../src/server';
 import type { ChangedPage, PagesResponse } from '../src/types';
@@ -115,6 +117,19 @@ describe('GET /__redline/pages', () => {
     }
   });
 
+  it('never links a protocol-relative or absolute seed', () => {
+    write(root, 'app/[...slug]/page.tsx', page('Docs'));
+    git(root, 'add', '.');
+    git(root, 'commit', '-q', '-m', 'docs');
+    pinBaseline({ root });
+    write(root, 'app/[...slug]/page.tsx', page('Docs2'));
+    // A top-level catch-all matches `//host/...` and `/\host` as paths, but a browser leaves the site on them.
+    write(root, 'redline.config.json', JSON.stringify({ seeds: ['//example.com/docs', '/\\example.com'] }));
+    expect(pages({ root }).pages.map((p) => [p.route, p.url, p.needsExample])).toEqual([['/[...slug]', null, true]]);
+    write(root, 'redline.config.json', JSON.stringify({ seeds: ['//example.com/docs', '/docs/intro'] }));
+    expect(pages({ root }).pages.map((p) => p.url)).toEqual(['/docs/intro']);
+  });
+
   it('reports disabled', () => {
     expect(pages({ root, enabled: false })).toMatchObject({ enabled: false, pages: [] });
   });
@@ -142,6 +157,38 @@ describe('isCurrentPage', () => {
   it('matches a dynamic route without a link by its pattern, and never a removed page', () => {
     expect(isCurrentPage(p('/users/[id]', null), at('/users/7'))).toBe(true);
     expect(isCurrentPage(p('/old', null, 'removed'), at('/old'))).toBe(false);
+  });
+});
+
+describe('isLinkableSeed', () => {
+  it('accepts same-origin paths only', () => {
+    expect(isLinkableSeed('/blog/hello?ref=x')).toBe(true);
+    expect(isLinkableSeed('/')).toBe(true);
+    for (const seed of ['//example.com/blog', '/\\example.com', 'https://example.com/', 'javascript:alert(1)', 'blog/hello', '']) {
+      expect(isLinkableSeed(seed)).toBe(false);
+    }
+  });
+});
+
+describe('pagesButtonLabel', () => {
+  it('stays visible while loading and after an error, with the count once ready', () => {
+    expect(pagesButtonLabel({ status: 'loading' })).toBe('Changed pages (…)');
+    expect(pagesButtonLabel({ status: 'error', error: 'boom' })).toBe('Changed pages (…)');
+    const response: PagesResponse = { enabled: true, mode: 'git', baselineSha: null, headSha: null, pages: [], unplaced: [], cached: false };
+    expect(pagesButtonLabel({ status: 'ready', response })).toBe('Changed pages (0)');
+  });
+});
+
+describe('latestOnly', () => {
+  it('drops a stale response once a newer request starts or the request is cancelled', () => {
+    const requests = latestOnly();
+    const first = requests.start();
+    expect(first()).toBe(true);
+    const second = requests.start();
+    expect(first()).toBe(false);
+    expect(second()).toBe(true);
+    requests.cancel();
+    expect(second()).toBe(false);
   });
 });
 

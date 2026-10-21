@@ -31,15 +31,15 @@ export interface ToolbarProps {
   viewing: CommitInfo | null;
   historyOpen: boolean;
   onToggleHistory: () => void;
-  /** Number of changed pages, or null before the first answer or with no baseline. */
-  pageCount: number | null;
+  /** The changed pages list, or null with no baseline pinned. The button shows whenever it is set. */
+  pages: PagesState | null;
   pagesOpen: boolean;
   onTogglePages: () => void;
   onLatest: () => void;
 }
 
 /** Floating toolbar: drag handle, status, outline toggle, history and view-mode indicator. */
-export function Toolbar({ prefs, status, viewing, historyOpen, onToggleHistory, pageCount, pagesOpen, onTogglePages, onLatest }: ToolbarProps) {
+export function Toolbar({ prefs, status, viewing, historyOpen, onToggleHistory, pages, pagesOpen, onTogglePages, onLatest }: ToolbarProps) {
   // Pointer offset inside the toolbar for the current drag gesture. Not render state.
   const grab = useRef<{ dx: number; dy: number } | null>(null);
 
@@ -116,9 +116,9 @@ export function Toolbar({ prefs, status, viewing, historyOpen, onToggleHistory, 
       >
         {prefs.outlines ? 'Hide outlines' : 'Show outlines'}
       </button>
-      {pageCount !== null && (
+      {pages && (
         <button type="button" aria-expanded={pagesOpen} onClick={onTogglePages} style={buttonStyle}>
-          Changed pages ({pageCount})
+          {pagesButtonLabel(pages)}
         </button>
       )}
       <button type="button" aria-expanded={historyOpen} onClick={onToggleHistory} style={buttonStyle}>
@@ -168,6 +168,11 @@ function row(active: boolean): CSSProperties {
 }
 
 export type PagesState = { status: 'loading' } | { status: 'error'; error: string } | { status: 'ready'; response: PagesResponse };
+
+/** Toolbar button text: the count once known, `…` while loading or after an error. */
+export function pagesButtonLabel(pages: PagesState): string {
+  return `Changed pages (${pages.status === 'ready' ? pages.response.pages.length : '…'})`;
+}
 
 const trimSlash = (p: string) => p.replace(/\/+$/, '') || '/';
 

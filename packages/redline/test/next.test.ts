@@ -134,6 +134,46 @@ describe('createRedlineHandler', () => {
   });
 });
 
+describe('createRedlineHandler appDir', () => {
+  // A monorepo with `root` at the top and the app in apps/web.
+  function monorepo(): string {
+    const top = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'redline-next-mono-')));
+    const git = (...args: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd: top, encoding: 'utf8' });
+    const write = (rel: string, text: string) => {
+      fs.mkdirSync(path.dirname(path.join(top, rel)), { recursive: true });
+      fs.writeFileSync(path.join(top, rel), text);
+    };
+    write('apps/web/package.json', JSON.stringify({ dependencies: { next: '16.0.0' } }));
+    write('apps/web/app/about/page.tsx', 'export default function About() { return <main>About</main>; }\n');
+    write('apps/web/app/blog/[slug]/page.tsx', 'export default function Post() { return <main>Post</main>; }\n');
+    write('apps/web/redline.config.json', JSON.stringify({ seeds: ['/blog/hello'] }));
+    git('init', '-q');
+    git('add', '.');
+    git('commit', '-q', '-m', 'init');
+    return top;
+  }
+
+  const changedPages = async (GET: (r: Request) => Promise<Response>, top: string) => {
+    fs.appendFileSync(path.join(top, 'apps/web/app/about/page.tsx'), '// edit\n');
+    fs.appendFileSync(path.join(top, 'apps/web/app/blog/[slug]/page.tsx'), '// edit\n');
+    return (await (await GET(new Request('http://x/api/redline/pages'))).json()).pages.map((p: { url: string | null }) => p.url);
+  };
+
+  it.each([
+    ['appDir with history off', { appDir: 'apps/web', history: false as const }],
+    ['history.appDir', { history: { appDir: 'apps/web', thumbnails: false } }],
+  ])('reads routes and redline.config.json from the app: %s', async (_name, extra) => {
+    const top = monorepo();
+    try {
+      const { GET, POST } = createRedlineHandler({ root: top, enabled: true, ...extra });
+      expect((await POST(new Request('http://x/api/redline/pin', { method: 'POST', body: '{}' }))).status).toBe(200);
+      expect(await changedPages(GET, top)).toEqual(['/about', '/blog/hello']);
+    } finally {
+      fs.rmSync(top, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('redlineAction', () => {
   it('reads the action after the API route or /__redline', () => {
     expect(redlineAction('/api/redline/diff')).toBe('diff');
