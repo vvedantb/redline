@@ -4,6 +4,7 @@ import { createBrowserRouter, RouterProvider } from 'react-router-dom';
 import About from './pages/About';
 import Contact from './pages/Contact';
 import Home from './pages/Home';
+import Team from './pages/Team';
 import Pricing from './pages/Pricing';
 import './styles.css';
 
@@ -12,6 +13,7 @@ const router = createBrowserRouter(
     { path: '/', element: <Home /> },
     { path: '/about', element: <About /> },
     { path: '/contact', element: <Contact /> },
+    { path: '/team', element: <Team /> },
     { path: '/pricing', element: <Pricing /> },
   ],
   { basename: import.meta.env.BASE_URL.replace(/\/$/, '') },

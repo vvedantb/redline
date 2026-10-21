@@ -22,6 +22,8 @@ const EXPECTED = {
     '/status': ['broken', 'components/StatusWidget.jsx'],
     '/old': ['removed', 'app/old/page.jsx'],
     '/pricing': ['added', 'app/pricing/page.jsx'],
+    // Fetches the root-absolute /api/team, whose data head changes.
+    '/team': ['changed'],
     '/account': ['skipped'],
     '/docs/[...slug]': ['skipped'],
   },
@@ -31,6 +33,8 @@ const EXPECTED = {
     '/about': ['unchanged'],
     '/settings': ['removed', 'src/pages/Settings.jsx'],
     '/pricing': ['added', 'src/pages/Pricing.jsx'],
+    // Fetches the root-absolute /team.json, whose data head changes.
+    '/team': ['changed'],
   },
 };
 
