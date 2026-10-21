@@ -129,6 +129,7 @@ These fields let `compare` capture pages behind sign-in, against a local backend
 
 - `envFile`: a dotenv file passed to both builds and to the Next.js server as is. The usual strip of secret and Convex keys does not apply to it, so put only what the build needs in it, such as a local backend URL and a publishable auth key. Vite inlines its `VITE_*` keys into the build. A build made with other values is built again. Keep this file and `.redline/` out of git.
 - `network`: `live` turns off the read-only network layer in captured pages, so sign-in requests and backend writes go through. Use it only with a seeded local backend. The default is `read-only`.
+- `signOutPaths`: extra sign-out paths that page discovery never loads, such as `["/end-session"]`. A path under one counts too, and case does not matter. It must be an array; entries that do not start with `/`, and `/` itself, are ignored with a notice. See below.
 - `blockConvexWrites`: drops the Convex mutation and action messages that captured pages send over their WebSocket, so a page that writes on load cannot change what the other commit sees. Queries still run. Each page reports how many writes were dropped.
 - `hooks`: a module with optional `login` and `routePath` exports. The older `auth` field (a module whose default export is `login`) still works.
 
@@ -152,6 +153,10 @@ export function routePath(path) {
   return path.replace(/^\/([^/]+)\/([^/]+)\/(web|docs)(\/|$)/, '/$1/$2--$3$4');
 }
 ```
+
+Page discovery never loads a sign-out route: one load would end the session for every page after it, and a server that ends the session on its side signs out every capture. By default it skips any path with a `logout`, `log-out`, `log_out`, `signout`, `sign-out` or `sign_out` segment, such as `/signout/` or `/api/auth/signout`, with or without a trailing slash. This applies to crawled links, file routes, `sitemap.xml` and derived examples. Each one shows in the report as skipped, with the reason "sign-out route, not loaded". Add your own with `signOutPaths`. Seeds are still loaded, because you asked for them, but after every other page at both commits, and the report says so.
+
+Known gap: in a production build, a Next.js `<Link>` to a sign-out route can still be prefetched while a page is captured, which may end the session. List the route in `signOutPaths` or `exclude`, mask the link with `mask` if it changes the page, and end the session from a `POST` action rather than a `GET` handler: only that stops the prefetch from signing out.
 
 Both commits are served from `127.0.0.1`, which shares cookies across ports, so `login` should return early when it finds a session. With `login` set, the fixed capture clock is the time the run starts instead of 1 January 2025: a clock in the past makes cookies set from script expire at once.
 
