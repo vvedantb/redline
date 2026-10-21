@@ -88,6 +88,17 @@ test('outlines only changed regions and opens the hunk on click', async ({ page,
   await expect(panel).toBeHidden();
 });
 
+test('re-pinning to the current content clears outlines', async ({ page, request }) => {
+  await pinCommitA(request);
+  await page.goto('/?redline=1');
+  await expect.poll(async () => (await outlinedSources(page)).length).toBeGreaterThan(0);
+
+  const res = await request.post('/__redline/pin', { data: { files: { [HERO]: current(HERO), [STATS]: current(STATS) } } });
+  expect(res.ok()).toBe(true);
+  await expect(outlines(page)).toHaveCount(0);
+  await expect(page.locator('[data-redline-status]')).toContainText('0 changed regions');
+});
+
 test('shows the plain-English note first, with the code behind "Show code"', async ({ page, request }) => {
   const notesFile = path.join(demoRoot, 'redline.notes.json');
   const note = 'The headline now says what Redline does.';
@@ -118,17 +129,6 @@ test('shows the plain-English note first, with the code behind "Show code"', asy
   } finally {
     fs.rmSync(notesFile, { force: true });
   }
-});
-
-test('re-pinning to the current content clears outlines', async ({ page, request }) => {
-  await pinCommitA(request);
-  await page.goto('/?redline=1');
-  await expect.poll(async () => (await outlinedSources(page)).length).toBeGreaterThan(0);
-
-  const res = await request.post('/__redline/pin', { data: { files: { [HERO]: current(HERO), [STATS]: current(STATS) } } });
-  expect(res.ok()).toBe(true);
-  await expect(outlines(page)).toHaveCount(0);
-  await expect(page.locator('[data-redline-status]')).toContainText('0 changed regions');
 });
 
 test('pinning HEAD through the UI stores the git SHA', async ({ page }) => {

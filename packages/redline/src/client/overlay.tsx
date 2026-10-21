@@ -324,7 +324,7 @@ export function RedlineOverlay(props: RedlineOverlayProps) {
         />
       )}
 
-      {selected && <HunkPanel key={selected.key} region={selected} baselineSha={diff?.baselineSha ?? null} onClose={() => setSelected(null)} />}
+      {selected && <HunkPanel region={selected} baselineSha={diff?.baselineSha ?? null} onClose={() => setSelected(null)} />}
     </div>,
     document.body,
   );
@@ -336,7 +336,9 @@ const NOTE_SOURCE = { file: 'From redline.notes.json', pr: 'From the PR descript
 function HunkPanel({ region, baselineSha, onClose }: { region: Region; baselineSha: string | null; onClose: () => void }) {
   const lines = region.hunk.patch.split('\n');
   const { note, noteSource } = region.hunk;
-  const [showCode, setShowCode] = useState(false);
+  // Keyed by region, so the code is hidden again when another hunk opens.
+  const [codeFor, setCodeFor] = useState<string | null>(null);
+  const showCode = codeFor === region.key;
   return (
     <aside
       role="dialog"
@@ -379,7 +381,7 @@ function HunkPanel({ region, baselineSha, onClose }: { region: Region; baselineS
           </p>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
             {noteSource && <span style={{ flex: 1, color: '#6b7280', fontSize: 12 }}>{NOTE_SOURCE[noteSource]}</span>}
-            <button type="button" aria-expanded={showCode} onClick={() => setShowCode(!showCode)} style={{ cursor: 'pointer' }}>
+            <button type="button" aria-expanded={showCode} onClick={() => setCodeFor(showCode ? null : region.key)} style={{ cursor: 'pointer' }}>
               {showCode ? 'Hide code' : 'Show code'}
             </button>
           </div>

@@ -4,8 +4,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createTwoFilesPatch } from 'diff';
 import type { BuildManager } from './build';
-import { parseUnifiedDiff } from './diff';
 import { attachNotes, parsePrNotes, readNotesFile, sharedPrBody } from './notes';
+import { parseUnifiedDiff } from './diff';
 import { normalizePath } from './source';
 import type { CommitInfo, DiffFile, DiffResponse, StoredBaseline } from './types';
 

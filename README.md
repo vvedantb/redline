@@ -353,7 +353,7 @@ These helpers also mirror the baseline to `localStorage` (`redline:baseline`). I
 
 | Endpoint | Returns |
 | --- | --- |
-| `GET /__redline/diff[?baseline=<ref>]` | Parsed hunks: working tree vs the pinned baseline, or vs `<ref>` when given. A hunk with a [change note](#change-notes) has `note` and `noteSource` (`file` or `pr`). |
+| `GET /__redline/diff[?baseline=<ref>]` | Parsed hunks: working tree vs the pinned baseline, or vs `<ref>` when given. |
 | `GET /__redline/baseline` | `HEAD` SHA and the pinned baseline. |
 | `GET /__redline/log[?limit=<n>]` | Commits reachable from `HEAD`, newest first: `sha`, `shortSha`, `subject`, `author`, `date` (ISO 8601). Default limit 50, maximum 200. Uses `git log`. |
 | `GET /__redline/file?path=<path>[&ref=<ref>]` | `{ path, ref, content }` for a file at a commit (default `HEAD`). Uses `git show`. `path` is relative to the project root and must stay inside it. Only files with a configured extension can be read. |
@@ -571,7 +571,7 @@ The hunk panel can show a plain-English note before the code, for reviewers who 
 - the panel shows the note first, with the code behind **Show code**;
 - the outline label shows the note on hover.
 
-A hunk with no note keeps the code view.
+A hunk with no note keeps the code view. Notes arrive with the diff: in `GET /__redline/diff`, a hunk with a note has `note` and `noteSource` (`file` or `pr`).
 
 Notes come from two places. Both use the same key: a path, with an optional line range (`path`, `path:12` or `path:12-20`).
 
