@@ -60,20 +60,6 @@ const CRAWL_DEPTH = 4;
 export const DEFAULT_CRAWL_BUDGET = 150;
 export const DEFAULT_CONCURRENCY = 4;
 
-/** A `logout`, `log-out`, `log_out`, `signout`, `sign-out` or `sign_out` path segment, as in `/auth/signout/`. */
-const SIGN_OUT = /(^|\/)(log[-_]?out|sign[-_]?out)(\/|$)/i;
-
-/**
- * Whether loading `appPath` would end the session. The crawl never follows these links and
- * discovery never returns them: one load signs the capture browser out for every page after it,
- * and a server that ends the session server-side signs out every context. `extra` paths match
- * exactly or as a parent path.
- */
-export function isSignOutPath(appPath: string, extra: string[] = []): boolean {
-  const p = normalize(appPath);
-  return SIGN_OUT.test(p) || extra.map(normalize).some((e) => p === e || p.startsWith(`${e}/`));
-}
-
 function segmentRegex(seg: string): string {
   let m: RegExpMatchArray | null;
   if ((m = seg.match(/^\[\[\.\.\.[^\]]+\]\]$/))) return '(?:/.+)?';
@@ -137,6 +123,20 @@ async function fetchSitemap(baseUrl: string): Promise<string[]> {
   } catch {
     return [];
   }
+}
+
+/** A `logout`, `log-out`, `log_out`, `signout`, `sign-out` or `sign_out` path segment, as in `/auth/signout/`. */
+const SIGN_OUT = /(^|\/)(log[-_]?out|sign[-_]?out)(\/|$)/i;
+
+/**
+ * Whether loading `appPath` would end the session. The crawl never follows these links and
+ * discovery never returns them: one load signs the capture browser out for every page after it,
+ * and a server that ends the session server-side signs out every context. `extra` paths match
+ * exactly or as a parent path.
+ */
+export function isSignOutPath(appPath: string, extra: string[] = []): boolean {
+  const p = normalize(appPath);
+  return SIGN_OUT.test(p) || extra.map(normalize).some((e) => p === e || p.startsWith(`${e}/`));
 }
 
 interface CrawlOptions {
