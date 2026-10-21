@@ -1,8 +1,7 @@
-import { transformSource } from './transform';
+import { transformSource, type TagOptions } from './transform';
 
-interface LoaderOptions {
+interface LoaderOptions extends TagOptions {
   root?: string;
-  tagComponents?: boolean;
 }
 
 interface LoaderContext {
@@ -17,7 +16,7 @@ interface LoaderContext {
 function redlineLoader(this: LoaderContext, source: string, map?: unknown): void {
   const opts = this.getOptions?.() ?? (typeof this.query === 'object' ? this.query : {}) ?? {};
   const root = opts.root ?? this.rootContext ?? process.cwd();
-  const result = transformSource(source, this.resourcePath, { root, tagComponents: opts.tagComponents });
+  const result = transformSource(source, this.resourcePath, { root, tagComponents: opts.tagComponents, skipComponentsFrom: opts.skipComponentsFrom });
   if (!result) return this.callback(null, source, map);
   this.callback(null, result.code, result.map);
 }

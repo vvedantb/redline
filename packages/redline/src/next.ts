@@ -6,7 +6,7 @@ import { defaultFixturesFile, injectBootstrap, networkAsset } from './network/se
 import { ENDPOINT } from './paths';
 import { handleRedlineRequest, DEFAULT_EXTENSIONS, type RedlineServerOptions } from './server';
 import { historyTarget, proxyRequest } from './standalone';
-import { TRANSFORM_FILE } from './transform';
+import { TRANSFORM_FILE, type TagOptions } from './transform';
 import type { RedlineHistoryOptions } from './types';
 
 export { HISTORY_ENV_ALLOWLIST, HISTORY_ENV_STRIP_KEYS, HISTORY_ENV_STRIP_VALUE, isHistoryEnvKeyAllowed } from './env';
@@ -20,6 +20,8 @@ export interface RedlineNextOptions {
   extensions?: string[];
   /** Tag component elements (`<Button>`, `<Tabs.Tab>`) as well as host elements. Default `true`. */
   tagComponents?: boolean;
+  /** Extra packages whose components are never tagged, on top of Headless UI and React Three Fiber/drei. */
+  skipComponentsFrom?: string[];
 }
 
 export interface RedlineNextHistoryOptions extends RedlineHistoryOptions {
@@ -59,8 +61,8 @@ function isEnabled(options: RedlineNextOptions): boolean {
 export const loaderPath = path.join(__dirname, 'loader.cjs');
 
 /** The loader entry for a webpack or Turbopack rule. Options must stay JSON for Turbopack. */
-function loaderEntry(root: string, tagComponents = true) {
-  return { loader: loaderPath, options: { root, tagComponents } };
+function loaderEntry(root: string, { tagComponents = true, skipComponentsFrom }: TagOptions) {
+  return { loader: loaderPath, options: { root, tagComponents, ...(skipComponentsFrom ? { skipComponentsFrom } : {}) } };
 }
 
 /** Turbopack glob for the files the loader tags. */
@@ -89,8 +91,8 @@ export function usesLegacyTurboKey(version: [number, number] | null): boolean {
  * If the user already has a rule for the same glob, the loader is appended to its
  * `loaders` so it runs first, on the original JSX.
  */
-export function mergeTurbopackRules(rules: AnyConfig | undefined, root: string, tagComponents = true): AnyConfig {
-  const loader = loaderEntry(root, tagComponents);
+export function mergeTurbopackRules(rules: AnyConfig | undefined, root: string, tag: TagOptions = {}): AnyConfig {
+  const loader = loaderEntry(root, tag);
   const existing = rules?.[TURBOPACK_GLOB];
   if (existing === undefined) return { ...(rules ?? {}), [TURBOPACK_GLOB]: { loaders: [loader] } };
   if (existing && Array.isArray(existing.loaders)) {
@@ -118,6 +120,7 @@ export function withRedline<T extends AnyConfig>(
   const userRewrites = nextConfig.rewrites as (() => Promise<Rewrites> | Rewrites) | undefined;
   const ours: Rewrite[] = [{ source: `${ENDPOINT}/:path*`, destination: `${apiRoute}/:path*` }];
   const root = process.cwd();
+  const tag: TagOptions = { tagComponents: options.tagComponents, skipComponentsFrom: options.skipComponentsFrom };
   // Follow the user's key if they already set one, otherwise pick by Next version.
   const legacy =
     nextConfig.turbopack === undefined &&
@@ -128,11 +131,11 @@ export function withRedline<T extends AnyConfig>(
           ...nextConfig.experimental,
           turbo: {
             ...nextConfig.experimental?.turbo,
-            rules: mergeTurbopackRules(nextConfig.experimental?.turbo?.rules, root, options.tagComponents),
+            rules: mergeTurbopackRules(nextConfig.experimental?.turbo?.rules, root, tag),
           },
         },
       }
-    : { turbopack: { ...nextConfig.turbopack, rules: mergeTurbopackRules(nextConfig.turbopack?.rules, root, options.tagComponents) } };
+    : { turbopack: { ...nextConfig.turbopack, rules: mergeTurbopackRules(nextConfig.turbopack?.rules, root, tag) } };
 
   return {
     ...nextConfig,
@@ -147,7 +150,7 @@ export function withRedline<T extends AnyConfig>(
           test: TRANSFORM_FILE,
           exclude: /node_modules/,
           enforce: 'pre',
-          use: [loaderEntry(ctx?.dir ?? process.cwd(), options.tagComponents)],
+          use: [loaderEntry(ctx?.dir ?? process.cwd(), tag)],
         });
       }
       return result;

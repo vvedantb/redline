@@ -87,6 +87,14 @@ describe('withRedline', () => {
     expect(out.module.rules[0].use[0].options).toEqual({ root: '/app', tagComponents: false });
   });
 
+  it('passes skipComponentsFrom to both loaders', () => {
+    const config = withRedline({}, { enabled: true, skipComponentsFrom: ['ui-kit'] });
+    const options = { tagComponents: true, skipComponentsFrom: ['ui-kit'] };
+    expect(config.turbopack!.rules[TURBOPACK_GLOB].loaders[0].options).toEqual({ root: process.cwd(), ...options });
+    const out = config.webpack!({ module: { rules: [] } }, { dev: true, dir: '/app' });
+    expect(out.module.rules[0].use[0].options).toEqual({ root: '/app', ...options });
+  });
+
   it('picks the Turbopack config key by Next version', () => {
     expect(usesLegacyTurboKey(null)).toBe(false);
     expect(usesLegacyTurboKey([14, 2])).toBe(true);

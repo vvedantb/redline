@@ -1,3 +1,7 @@
+import { mkdtempSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { build } from 'vite';
 import { describe, expect, it } from 'vitest';
 import redlineLoader from '../src/loader';
 import { shouldTransform, transformSource } from '../src/transform';
@@ -43,6 +47,39 @@ describe('transformSource', () => {
     expect(transformSource(code, '/project/src/A.tsx', { root })).toBeNull();
   });
 
+  it('leaves Activity, ViewTransition and aliased React built-ins alone', () => {
+    const code = [
+      "import { Fragment as F, Suspense as S, Activity as Act } from 'react';",
+      'const A = () => <F><S fallback={null}><Act mode="visible"><Activity><ViewTransition><p /></ViewTransition></Activity></Act></S></F>;',
+    ].join('\n');
+    const out = transformSource(code, '/project/src/A.tsx', { root })!;
+    expect(out.code).toContain(
+      '<F><S fallback={null}><Act mode="visible"><Activity><ViewTransition><p data-redline-source="src/A.tsx:2-2" />',
+    );
+  });
+
+  it('skips components imported from Headless UI and React Three Fiber/drei, member and namespace forms included', () => {
+    const code = [
+      "import { Menu, Dialog as D } from '@headlessui/react';",
+      "import * as Drei from '@react-three/drei';",
+      "import { Canvas } from '@react-three/fiber';",
+      "import { Button } from '@mantine/core';",
+      'const A = () => (',
+      '  <Menu><Menu.Button>Open</Menu.Button><Menu.Items><D.Panel /></Menu.Items>',
+      '    <Canvas><Drei.OrbitControls /><Drei.Html.Inner /></Canvas><Button>Go</Button></Menu>',
+      ');',
+    ].join('\n');
+    const out = transformSource(code, '/project/src/A.tsx', { root })!;
+    expect(out.code).toContain('<Menu><Menu.Button>Open</Menu.Button><Menu.Items><D.Panel /></Menu.Items>');
+    expect(out.code).toContain('<Canvas><Drei.OrbitControls /><Drei.Html.Inner /></Canvas><Button data-redline-source="src/A.tsx:7-7">');
+  });
+
+  it('skips extra packages from skipComponentsFrom, subpaths included', () => {
+    const code = "import { Scene } from 'scene-kit/react';\nimport { Card } from 'ui-kit';\nconst A = () => <Scene><Card /></Scene>;";
+    const out = transformSource(code, '/project/src/A.tsx', { root, skipComponentsFrom: ['scene-kit'] })!;
+    expect(out.code).toContain('<Scene><Card data-redline-source="src/A.tsx:3-3" /></Scene>');
+  });
+
   it('puts the attribute after type arguments and spreads, so the innermost JSX wins', () => {
     const code = 'export const A = (p: P) => <Select<Option> {...p} value="x" />;\nexport const B = (p: P) => <div {...p} />;';
     const out = transformSource(code, '/project/src/A.tsx', { root })!;
@@ -86,30 +123,54 @@ describe('loader and Vite plugin', () => {
   const code = 'export const A = () => <Card><p /></Card>;';
   const file = '/project/src/A.tsx';
 
-  const runLoader = (options: { root: string; tagComponents?: boolean }) => {
+  const runLoader = (options: { root: string; tagComponents?: boolean; skipComponentsFrom?: string[] }, src = code) => {
     let out = '';
     redlineLoader.call(
       { resourcePath: file, getOptions: () => options, callback: (_err: Error | null, result?: string) => void (out = result ?? '') },
-      code,
+      src,
     );
     return out;
   };
 
-  // The plugin's hooks are plain functions; this is the slice of the Vite API the test calls.
-  type ViteHooks = {
-    configResolved(config: { root: string; command: string }): void;
-    transform(code: string, id: string): { code: string } | null;
-  };
-  const runVite = (options: RedlineViteOptions) => {
-    const plugin = redline({ ...options, history: false }) as unknown as ViteHooks;
-    plugin.configResolved({ root, command: 'serve' });
-    return plugin.transform(code, file)?.code ?? '';
+  // Runs the plugin in a real in-memory Vite build (no server, nothing written) and captures the module after Redline.
+  const viteRoot = mkdtempSync(path.join(os.tmpdir(), 'redline-vite-'));
+  const viteFile = path.join(viteRoot, 'src/A.tsx');
+  const runVite = async (options: RedlineViteOptions, src = code) => {
+    let out = '';
+    await build({
+      root: viteRoot,
+      configFile: false,
+      logLevel: 'silent',
+      build: { write: false, rollupOptions: { input: viteFile } },
+      plugins: [
+        redline({ enabled: true, ...options, history: false }),
+        {
+          name: 'capture',
+          enforce: 'pre',
+          resolveId: (id) => (id === viteFile ? id : null),
+          load: (id) => (id === viteFile ? src : null),
+          transform(result, id) {
+            if (id !== viteFile) return null;
+            out = result;
+            return 'export {};';
+          },
+        },
+      ],
+    });
+    return out;
   };
 
-  it('tags components by default and only host elements with tagComponents: false', () => {
+  it('tags components by default and only host elements with tagComponents: false', async () => {
     expect(runLoader({ root })).toContain('<Card data-redline-source="src/A.tsx:1-1">');
-    expect(runVite({})).toContain('<Card data-redline-source="src/A.tsx:1-1">');
+    expect(await runVite({})).toContain('<Card data-redline-source="src/A.tsx:1-1">');
     expect(runLoader({ root, tagComponents: false })).toBe('export const A = () => <Card><p data-redline-source="src/A.tsx:1-1" /></Card>;');
-    expect(runVite({ tagComponents: false })).toBe('export const A = () => <Card><p data-redline-source="src/A.tsx:1-1" /></Card>;');
+    expect(await runVite({ tagComponents: false })).toBe('export const A = () => <Card><p data-redline-source="src/A.tsx:1-1" /></Card>;');
+  });
+
+  it('passes skipComponentsFrom through the loader and the Vite plugin', async () => {
+    const src = `import { Card } from 'ui-kit';\n${code}`;
+    const expected = '<Card><p data-redline-source="src/A.tsx:2-2" /></Card>';
+    expect(runLoader({ root, skipComponentsFrom: ['ui-kit'] }, src)).toContain(expected);
+    expect(await runVite({ skipComponentsFrom: ['ui-kit'] }, src)).toContain(expected);
   });
 });

@@ -23,6 +23,8 @@ export interface RedlineViteOptions {
   extensions?: string[];
   /** Tag component elements (`<Button>`, `<Tabs.Tab>`) as well as host elements. Default `true`. */
   tagComponents?: boolean;
+  /** Extra packages whose components are never tagged, on top of Headless UI and React Three Fiber/drei. */
+  skipComponentsFrom?: string[];
   /** Per-commit production builds for the History panel. `false` turns them off. */
   history?: RedlineHistoryOptions | false;
 }
@@ -87,7 +89,7 @@ export function redline(options: RedlineViteOptions = {}): Plugin {
     },
     transform(code, id) {
       if (!active || !shouldTransform(id)) return null;
-      return transformSource(code, id, { root, tagComponents: options.tagComponents });
+      return transformSource(code, id, { root, tagComponents: options.tagComponents, skipComponentsFrom: options.skipComponentsFrom });
     },
   };
 }

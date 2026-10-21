@@ -201,7 +201,10 @@ Redline also ships a dev-only overlay. You pin a baseline commit; after an agent
 
 ### How it works
 
-1. A transform adds `data-redline-source="src/Hero.tsx:4-9"` (file, start line, end line) to every JSX element in dev: host elements (`div`, `h1`, `button` and so on) and component elements (`<ActionIcon>`, `<Tabs.Tab>`). Component libraries such as Mantine, MUI and Tabler pass `data-*` props through to the DOM, so the call site in your code is outlined. `Fragment`, `Suspense`, `StrictMode`, `Profiler` and names that end in `Provider` or `Consumer` are not tagged, because they render no element of their own.
+1. A transform adds `data-redline-source="src/Hero.tsx:4-9"` (file, start line, end line) to every JSX element in dev: host elements (`div`, `h1`, `button` and so on) and component elements (`<ActionIcon>`, `<Tabs.Tab>`). Component libraries such as Mantine, MUI and Tabler pass `data-*` props through to the DOM, so the call site in your code is outlined. `Fragment`, `Suspense`, `StrictMode`, `Profiler`, `Activity`, `ViewTransition` and names that end in `Provider` or `Consumer` are not tagged, because they render no element of their own. Aliased React imports count too (`import { Fragment as F } from 'react'`).
+   - Components imported from `@headlessui/react`, `@react-three/fiber` or `@react-three/drei` are not tagged, in any import form (`<Menu.Button>`, `import * as Drei`). Headless UI throws on extra props when it renders a Fragment, and React Three Fiber reads `data-redline-source` as a nested property path. Add more packages with `skipComponentsFrom`.
+   - A local wrapper such as `const PrimaryButton = (p) => <Button {...p} />` passes its own tag last, so it overwrites the call-site tag: the DOM points at the wrapper file, not at the `<PrimaryButton>` call.
+   - `tagComponents: false` goes back to host-only tagging.
 2. The dev server serves `/__redline/*`. `GET /__redline/diff` runs `git diff <baseline>` over `tsx`, `jsx`, `ts`, `js` and `css` files, adds untracked files, and returns parsed hunks.
 3. `<RedlineOverlay />` fetches the diff, finds tagged elements, and maps each changed line to the innermost element whose source range contains it. It draws a fixed-position outline over each match.
 4. Each outline has a small label button. Click it to open a side panel with the file path, line and hunk text.
@@ -251,6 +254,7 @@ Plugin options:
 | `baselineFile` | `<root>/.redline/baseline.json` | Where the pinned baseline is stored. |
 | `extensions` | `['tsx', 'jsx', 'ts', 'js', 'css']` | File types included in git diffs. |
 | `tagComponents` | `true` | Also tag component elements, not only host elements. Set `false` if your components fail or warn on an unknown `data-redline-source` prop. |
+| `skipComponentsFrom` | `[]` | Extra packages whose components are never tagged, added to the built-in list (`@headlessui/react`, `@react-three/fiber`, `@react-three/drei`). Subpaths match too. |
 | `history` | `{ maxBuilds: 5, thumbnails: true }` | History builds. `maxBuilds` is how many ready builds stay on disk. `thumbnails: false` skips Playwright screenshots. `networkFixtures` is the fixtures file for the [read-only network layer](#history-network-read-only) (default `.redline/network-fixtures.json`). `false` turns History builds off. |
 
 Set `REDLINE=0` in the environment to turn Redline off whatever `enabled` says. History builds use this.
@@ -307,7 +311,7 @@ export function DevTools() {
 }
 ```
 
-`withRedline(config, options)` accepts `enabled`, `apiRoute` (default `/api/redline`), `baselineFile`, `extensions` and `tagComponents` (default `true`, as for Vite). When `NODE_ENV` is `production` and `enabled` is not `true`, it returns your config unchanged and the route handler reports `enabled: false`. `REDLINE=0` in the environment does the same, even with `enabled: true`. In dev it also sets `NEXT_PUBLIC_REDLINE=1`.
+`withRedline(config, options)` accepts `enabled`, `apiRoute` (default `/api/redline`), `baselineFile`, `extensions`, `tagComponents` (default `true`, as for Vite) and `skipComponentsFrom`. When `NODE_ENV` is `production` and `enabled` is not `true`, it returns your config unchanged and the route handler reports `enabled: false`. `REDLINE=0` in the environment does the same, even with `enabled: true`. In dev it also sets `NEXT_PUBLIC_REDLINE=1`.
 
 The Next.js integration is covered by unit tests. The E2E suite runs against the Vite demo.
 
