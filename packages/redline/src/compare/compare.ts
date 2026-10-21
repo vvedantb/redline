@@ -7,6 +7,7 @@ import type { BrowserContext, Page } from 'playwright-core';
 import { BuildManager } from '../build';
 import { parseUnifiedDiff } from '../diff';
 import { checkConvexTarget, convexImportArgs, readConvexTarget } from '../convex';
+import { CONFIG_FILE } from '../paths';
 import { parseEnvText } from '../env';
 import { analyzeRoutePair, createJevClient, JEV_SKIPPED_NOTICE, mockJevFetch, type JevAnalysis, type JevCandidate, type JevClient } from '../jev';
 import { resolveCommit } from '../server';
@@ -145,7 +146,7 @@ export interface RedlineConfig {
   cache?: boolean;
 }
 
-export const CONFIG_FILE = 'redline.config.json';
+export { CONFIG_FILE };
 
 export function readConfig(root: string): RedlineConfig {
   const file = path.join(root, CONFIG_FILE);

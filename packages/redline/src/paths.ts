@@ -1,3 +1,6 @@
+/** Optional config file in the app directory, read by `compare` and the overlay's pages list. */
+export const CONFIG_FILE = 'redline.config.json';
+
 /** Base URL of the Redline endpoints. */
 export const ENDPOINT = '/__redline';
 

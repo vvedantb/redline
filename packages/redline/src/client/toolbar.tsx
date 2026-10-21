@@ -1,5 +1,6 @@
 import { useRef, type CSSProperties, type PointerEvent } from 'react';
-import type { BuildJob, BuildStatus, CommitInfo } from '../types';
+import { matchPattern } from '../routes/pattern';
+import type { BuildJob, BuildStatus, ChangedPage, CommitInfo, PagesResponse } from '../types';
 import { setToolbarPrefs, type ToolbarPrefs } from './prefs';
 
 const MONO = 'ui-monospace, SFMono-Regular, Menlo, monospace';
@@ -30,11 +31,15 @@ export interface ToolbarProps {
   viewing: CommitInfo | null;
   historyOpen: boolean;
   onToggleHistory: () => void;
+  /** Number of changed pages, or null before the first answer or with no baseline. */
+  pageCount: number | null;
+  pagesOpen: boolean;
+  onTogglePages: () => void;
   onLatest: () => void;
 }
 
 /** Floating toolbar: drag handle, status, outline toggle, history and view-mode indicator. */
-export function Toolbar({ prefs, status, viewing, historyOpen, onToggleHistory, onLatest }: ToolbarProps) {
+export function Toolbar({ prefs, status, viewing, historyOpen, onToggleHistory, pageCount, pagesOpen, onTogglePages, onLatest }: ToolbarProps) {
   // Pointer offset inside the toolbar for the current drag gesture. Not render state.
   const grab = useRef<{ dx: number; dy: number } | null>(null);
 
@@ -111,10 +116,145 @@ export function Toolbar({ prefs, status, viewing, historyOpen, onToggleHistory, 
       >
         {prefs.outlines ? 'Hide outlines' : 'Show outlines'}
       </button>
+      {pageCount !== null && (
+        <button type="button" aria-expanded={pagesOpen} onClick={onTogglePages} style={buttonStyle}>
+          Changed pages ({pageCount})
+        </button>
+      )}
       <button type="button" aria-expanded={historyOpen} onClick={onToggleHistory} style={buttonStyle}>
         History
       </button>
     </div>
+  );
+}
+
+/** Left-side panel shared by History and Changed pages. */
+const sidePanel: CSSProperties = {
+  position: 'fixed',
+  top: 0,
+  left: 0,
+  bottom: 0,
+  width: 'min(360px, 100vw)',
+  pointerEvents: 'auto',
+  background: '#fff',
+  color: '#111827',
+  boxShadow: '4px 0 16px rgba(0,0,0,0.12)',
+  display: 'flex',
+  flexDirection: 'column',
+  font: '13px/1.5 system-ui, sans-serif',
+};
+
+const panelHeader: CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px', background: '#f9fafb' };
+
+const intro: CSSProperties = { margin: 0, padding: '8px 12px', color: '#6b7280', fontSize: 12 };
+
+function row(active: boolean): CSSProperties {
+  return {
+    display: 'flex',
+    gap: 10,
+    alignItems: 'center',
+    width: '100%',
+    boxSizing: 'border-box',
+    textAlign: 'left',
+    padding: '8px 12px',
+    border: 0,
+    borderLeft: `3px solid ${active ? '#e11d48' : 'transparent'}`,
+    background: active ? '#fff1f2' : 'transparent',
+    color: 'inherit',
+    font: 'inherit',
+    textDecoration: 'none',
+    cursor: 'pointer',
+  };
+}
+
+export type PagesState = { status: 'loading' } | { status: 'error'; error: string } | { status: 'ready'; response: PagesResponse };
+
+const trimSlash = (p: string) => p.replace(/\/+$/, '') || '/';
+
+/** The page the browser is on: its link, or for a dynamic route without one, the pattern. */
+export function isCurrentPage(page: ChangedPage, location: { pathname: string; search: string }): boolean {
+  if (page.status === 'removed') return false;
+  if (!page.url) return matchPattern(page.route, location.pathname);
+  const url = new URL(page.url, 'http://x');
+  return trimSlash(url.pathname) === trimSlash(location.pathname) && (!url.search || url.search === location.search);
+}
+
+function PageSource({ page }: { page: ChangedPage }) {
+  const first = page.sources[0];
+  if (!first) return null;
+  const more = page.sources.length - 1;
+  return (
+    <div style={{ color: '#6b7280', fontSize: 12, wordBreak: 'break-all' }}>
+      {page.confidence} confidence · <code style={{ font: `12px ${MONO}` }}>{first.file}</code>
+      {more > 0 ? ` +${more} more` : ''}
+    </div>
+  );
+}
+
+export interface PagesPanelProps {
+  pages: PagesState;
+  location: { pathname: string; search: string };
+  onRefresh: () => void;
+  onClose: () => void;
+}
+
+/** Pages the changed files reach, as links in the same tab. Direct causes first, then removed pages. */
+export function PagesPanel({ pages, location, onRefresh, onClose }: PagesPanelProps) {
+  return (
+    <aside role="dialog" aria-label="Redline changed pages" data-redline-pages="" style={sidePanel}>
+      <header style={panelHeader}>
+        <div style={{ flex: 1, fontWeight: 600 }}>Changed pages</div>
+        <button type="button" onClick={onRefresh} style={{ cursor: 'pointer' }}>
+          Refresh
+        </button>
+        <button type="button" onClick={onClose} aria-label="Close changed pages panel" style={{ cursor: 'pointer' }}>
+          Close
+        </button>
+      </header>
+      <p style={intro}>Pages that use the changed files, the most direct first. Open one to see its outlines.</p>
+      <div style={{ flex: 1, overflow: 'auto' }}>
+        {pages.status === 'loading' && <p style={{ padding: '8px 12px', margin: 0 }}>Loading…</p>}
+        {pages.status === 'error' && (
+          <p role="alert" style={{ padding: '8px 12px', margin: 0, color: '#b91c1c' }}>
+            {pages.error}
+          </p>
+        )}
+        {pages.status === 'ready' && pages.response.error && (
+          <p role="alert" style={{ padding: '8px 12px', margin: 0, color: '#b91c1c', fontSize: 12 }}>
+            {pages.response.error}
+          </p>
+        )}
+        {pages.status === 'ready' && pages.response.pages.length === 0 && (
+          <p style={{ padding: '8px 12px', margin: 0, color: '#6b7280' }}>No pages use the changed files.</p>
+        )}
+        {pages.status === 'ready' &&
+          pages.response.pages.map((p) => {
+            const current = isCurrentPage(p, location);
+            const body = (
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div>
+                  <code style={{ font: `12px ${MONO}`, wordBreak: 'break-all' }}>{p.url ?? p.route}</code>
+                  {p.status === 'removed' && <span style={{ color: '#b91c1c', fontWeight: 600 }}> Removed</span>}
+                  {current && <span style={{ color: '#e11d48', fontWeight: 600 }}> · this page</span>}
+                </div>
+                {p.needsExample && (
+                  <div style={{ fontSize: 12 }}>Needs an example URL: add one to "seeds" in redline.config.json.</div>
+                )}
+                <PageSource page={p} />
+              </div>
+            );
+            return p.url ? (
+              <a key={p.route} href={p.url} data-redline-page={p.route} aria-current={current ? 'page' : undefined} style={row(current)}>
+                {body}
+              </a>
+            ) : (
+              <div key={p.route} data-redline-page={p.route} aria-current={current ? 'page' : undefined} style={{ ...row(current), cursor: 'default' }}>
+                {body}
+              </div>
+            );
+          })}
+      </div>
+    </aside>
   );
 }
 
@@ -220,42 +360,10 @@ function timeAgo(iso: string): string {
 /** Commit list. Selecting a commit queues a production build of it and shows it when ready. */
 export function HistoryPanel(props: HistoryPanelProps) {
   const { endpoint, history, builds, buildError, viewing, onSelect, onRetry, onLatest, onRefresh, onClose } = props;
-  const row = (active: boolean): CSSProperties => ({
-    display: 'flex',
-    gap: 10,
-    alignItems: 'center',
-    width: '100%',
-    textAlign: 'left',
-    padding: '8px 12px',
-    border: 0,
-    borderLeft: `3px solid ${active ? '#e11d48' : 'transparent'}`,
-    background: active ? '#fff1f2' : 'transparent',
-    color: 'inherit',
-    font: 'inherit',
-    cursor: 'pointer',
-  });
 
   return (
-    <aside
-      role="dialog"
-      aria-label="Redline history"
-      data-redline-history=""
-      style={{
-        position: 'fixed',
-        top: 0,
-        left: 0,
-        bottom: 0,
-        width: 'min(360px, 100vw)',
-        pointerEvents: 'auto',
-        background: '#fff',
-        color: '#111827',
-        boxShadow: '4px 0 16px rgba(0,0,0,0.12)',
-        display: 'flex',
-        flexDirection: 'column',
-        font: '13px/1.5 system-ui, sans-serif',
-      }}
-    >
-      <header style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px', background: '#f9fafb' }}>
+    <aside role="dialog" aria-label="Redline history" data-redline-history="" style={sidePanel}>
+      <header style={panelHeader}>
         <div style={{ flex: 1, fontWeight: 600 }}>History</div>
         <button type="button" onClick={onRefresh} style={{ cursor: 'pointer' }}>
           Refresh
@@ -264,7 +372,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
           Close
         </button>
       </header>
-      <p style={{ margin: 0, padding: '8px 12px', color: '#6b7280', fontSize: 12 }}>
+      <p style={intro}>
         Pick a commit to build it and see the app as it was. Builds run in a separate git worktree, so your files are
         not touched. Latest returns to the live app.
       </p>

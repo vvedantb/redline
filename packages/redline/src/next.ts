@@ -255,6 +255,7 @@ export function createRedlineHandler(options: RedlineHandlerOptions = {}) {
     const enabled = isEnabled(options);
     return {
       root,
+      appDir: path.resolve(root, (options.history || undefined)?.appDir ?? '.'),
       baselineFile: options.baselineFile,
       extensions: options.extensions ?? DEFAULT_EXTENSIONS,
       enabled,
