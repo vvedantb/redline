@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
-import { discoverRoutes, isSignOutPath } from '../../src/routes/discover';
+import { discoverRoutes, isSignOutPath, parseSignOutPaths, SIGN_OUT_SKIPPED, signOutLast } from '../../src/routes/discover';
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'redline-signout-'));
 afterAll(() => fs.rmSync(tmp, { recursive: true, force: true }));
@@ -25,6 +25,36 @@ describe('isSignOutPath', () => {
     expect(isSignOutPath('/end-session/now', ['/end-session'])).toBe(true);
     expect(isSignOutPath('/end-sessions', ['/end-session'])).toBe(false);
   });
+
+  it('matches signOutPaths ignoring case, and never treats / as one', () => {
+    expect(isSignOutPath('/End-Session', ['/end-session'])).toBe(true);
+    expect(isSignOutPath('/end-session/now', ['/END-SESSION'])).toBe(true);
+    expect(isSignOutPath('/about', ['/'])).toBe(false);
+    expect(isSignOutPath('/', ['/'])).toBe(false);
+  });
+});
+
+describe('parseSignOutPaths', () => {
+  it('keeps paths that start with /, and ignores / and invalid entries', () => {
+    // The config is unchecked JSON: build bad entries through JSON.parse, as readConfig does.
+    const raw: string[] = JSON.parse('["/bye", "/", "bye", 3, null, "//"]');
+    expect(parseSignOutPaths(raw)).toEqual({ paths: ['/bye'], ignored: ['"/"', '"bye"', '3', 'null', '"//"'] });
+    expect(parseSignOutPaths(undefined)).toEqual({ paths: [], ignored: [] });
+  });
+
+  it('rejects a value that is not an array', () => {
+    const raw: string[] = JSON.parse('"/bye"');
+    expect(() => parseSignOutPaths(raw)).toThrow(/signOutPaths must be an array/);
+  });
+});
+
+describe('signOutLast', () => {
+  it('moves sign-out seeds after every other route, keeping the rest in order', () => {
+    const routes = [{ path: '/logout' }, { path: '/' }, { path: '/bye' }, { path: '/about' }];
+    const { routes: ordered, last } = signOutLast(routes, ['/bye']);
+    expect(ordered.map((r) => r.path)).toEqual(['/', '/about', '/logout', '/bye']);
+    expect(last.map((r) => r.path)).toEqual(['/logout', '/bye']);
+  });
 });
 
 describe('discoverRoutes', () => {
@@ -34,7 +64,12 @@ describe('discoverRoutes', () => {
       fs.mkdirSync(path.dirname(path.join(root, 'app', page)), { recursive: true });
       fs.writeFileSync(path.join(root, 'app', page), 'export default function P() { return null; }\n');
     }
-    const { routes } = await discoverRoutes({ root, framework: 'nextjs-app', seeds: ['/sign-out'], signOutPaths: ['/bye'] });
-    expect(routes.map((r) => r.path).sort()).toEqual(['/', '/about', '/sign-out']);
+    const { routes, skipped } = await discoverRoutes({ root, framework: 'nextjs-app', seeds: ['/sign-out', '/auth/signout/'], signOutPaths: ['/Bye'] });
+    expect(routes.map((r) => r.path).sort()).toEqual(['/', '/about', '/auth/signout', '/sign-out']);
+    // Dropped routes are reported, except the one a seed loads anyway.
+    expect(skipped).toEqual([
+      { route: '/bye', reason: SIGN_OUT_SKIPPED },
+      { route: '/logout', reason: SIGN_OUT_SKIPPED },
+    ]);
   });
 });
