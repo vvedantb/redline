@@ -44,21 +44,32 @@ const trimSlash = (p: string) => p.replace(/\/+$/, '') || '/';
 
 /** The page was redirected to a sign-in path: one of `signInPaths` (or under one), else one that matches `SIGN_IN`. */
 function redirectedToSignIn(page: PageCapture, signInPaths?: string[]): boolean {
-  const final = trimSlash(page.finalPath);
-  if (final === trimSlash(page.path)) return false;
+  const final = trimSlash(page.finalPath).toLowerCase();
+  if (final === trimSlash(page.path).toLowerCase()) return false;
   if (!signInPaths?.length) return SIGN_IN.test(final);
-  return signInPaths.map(trimSlash).some((p) => final === p || final.startsWith(`${p}/`));
+  return signInPaths.map((p) => trimSlash(p).toLowerCase()).some((p) => final === p || final.startsWith(`${p}/`));
 }
 
 /**
  * Why `page` looks signed out, or null. Without `signInPaths`, a sign-in form shown in place
- * counts too, but only when the other commit's page has none: a change-password page has one at both.
+ * counts too, but only when the other commit shows a working page with none: a change-password
+ * page has one at both, and a fix for a blank or broken page may add one.
  */
 function signedOut(page: PageCapture | undefined, other: PageCapture | undefined, signInPaths?: string[]): string | null {
   if (!page || page.failed) return null;
   if (redirectedToSignIn(page, signInPaths)) return `ended on ${page.finalPath}`;
-  if (!signInPaths?.length && page.signInForm && usable(other) && !other.signInForm) return 'showed a sign-in form';
+  if (!signInPaths?.length && page.signInForm && usable(other) && other.content > 0 && !other.appError && !other.signInForm) {
+    return 'showed a sign-in form';
+  }
   return null;
+}
+
+/**
+ * The capture may be signed out, judged on its own: it ended on a sign-in path or, without
+ * `signInPaths`, showed a password field. With a login hook, such captures are not cached.
+ */
+export function maybeSignedOut(page: PageCapture, signInPaths?: string[]): boolean {
+  return redirectedToSignIn(page, signInPaths) || (!signInPaths?.length && !!page.signInForm);
 }
 
 /** Decide what happened to one page between base and head. */
@@ -66,13 +77,7 @@ export function classify({ before, after, regions, inBase, inHead, login, signIn
   if (inBase && !inHead && !usable(after)) return { status: 'removed', reason: 'The page file was deleted' };
   if (!after) return { status: 'skipped', reason: 'Not captured after the change' };
   if (after.failed) return { status: 'skipped', reason: `Couldn't load the page: ${after.failed}` };
-  if (login) {
-    // A signed-out capture shows the sign-in screen, not the page: comparing it would report a change that is not there.
-    const base = signedOut(before, after, signInPaths);
-    const head = signedOut(after, before, signInPaths);
-    const at = base && head ? 'both commits' : base ? 'the base commit' : 'the head commit';
-    if (base || head) return { status: 'skipped', reason: `${SIGNED_OUT} at ${at} (${head ?? base})` };
-  } else if (redirectedToSignIn(after, signInPaths)) {
+  if (!login && redirectedToSignIn(after, signInPaths)) {
     return { status: 'skipped', reason: `Needs sign-in (redirects to ${after.finalPath})` };
   }
 
@@ -81,6 +86,14 @@ export function classify({ before, after, regions, inBase, inHead, login, signIn
   if (after.appError && !before?.appError) return { status: 'broken', reason: 'The page shows an error screen' };
   if (newErrors.length) return { status: 'broken', reason: `New error: ${newErrors[0]}` };
   if (usable(before) && before.content > 0 && after.content === 0 && !after.notFound) return { status: 'broken', reason: 'The page is now blank' };
+  if (login) {
+    // After the broken checks, so a broken head is still reported. A signed-out capture shows the
+    // sign-in screen, not the page: comparing it would report a change that is not there.
+    const base = signedOut(before, after, signInPaths);
+    const head = signedOut(after, before, signInPaths);
+    const at = base && head ? 'both commits' : base ? 'the base commit' : 'the head commit';
+    if (base || head) return { status: 'skipped', reason: `${SIGNED_OUT} at ${at} (${head ?? base})` };
+  }
   if (usable(before) && before.content === 0 && after.content === 0 && !after.notFound) {
     return { status: 'skipped', reason: BLANK_BOTH };
   }

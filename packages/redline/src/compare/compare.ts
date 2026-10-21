@@ -17,7 +17,7 @@ import { capturePage, CONVEX_WRITE_GUARD, DEFAULT_VIEWPORT, launchBrowser, stabl
 import { startDevServer } from './devserver';
 import { groupSharedChanges } from './groups';
 import { mapPool } from './pool';
-import { BLANK_BOTH, SIGNED_OUT, classify, rankPages, type PageStatus } from './classify';
+import { BLANK_BOTH, SIGNED_OUT, classify, maybeSignedOut, rankPages, type PageStatus } from './classify';
 import { diffImages, dropLoadNoise, regionHashes, type Region } from './pixels';
 import { buildRouteChanges } from './routechanges';
 import { writeReport, type CommitRef, type PageShot, type Report, type ReportFileDiff, type ReportPage } from './report';
@@ -156,10 +156,21 @@ export const CONFIG_FILE = 'redline.config.json';
 export function readConfig(root: string): RedlineConfig {
   const file = path.join(root, CONFIG_FILE);
   if (!fs.existsSync(file)) return {};
+  let config: RedlineConfig;
   try {
-    return JSON.parse(fs.readFileSync(file, 'utf8')) as RedlineConfig;
+    config = JSON.parse(fs.readFileSync(file, 'utf8')) as RedlineConfig;
   } catch (err) {
     throw new Error(`${CONFIG_FILE} is not valid JSON: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  checkSignInPaths(config.signInPaths);
+  return config;
+}
+
+/** A string such as `"/signin"` would spread into single characters and match nothing, so fail loudly. */
+function checkSignInPaths(paths: RedlineConfig['signInPaths']): void {
+  if (paths === undefined) return;
+  if (!Array.isArray(paths) || !paths.every((p) => typeof p === 'string' && p.startsWith('/'))) {
+    throw new Error(`${CONFIG_FILE}: "signInPaths" must be a list of app paths that start with "/", such as ["/signin"].`);
   }
 }
 
@@ -298,7 +309,7 @@ function clearOut(outDir: string): void {
 
 const DEFAULT_SAMPLE = 5;
 /** Bump when a change to capturing makes old cached screenshots wrong. */
-const CAPTURE_CACHE_VERSION = 7;
+const CAPTURE_CACHE_VERSION = 8;
 
 function hashOf(value: unknown): string {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex').slice(0, 16);
@@ -350,9 +361,20 @@ export function readCachedCapture(root: string, sha: string, key: string, appPat
   }
 }
 
-/** Keep a capture for later runs. Failed loads are not kept, so they are tried again. */
-export function writeCachedCapture(root: string, sha: string, key: string, appPath: string, page: PageCapture): void {
+/**
+ * Keep a capture for later runs. Failed loads are not kept, so they are tried again. With a login
+ * hook, captures that may be signed out are not kept either, so a failed sign-in is not reused.
+ */
+export function writeCachedCapture(
+  root: string,
+  sha: string,
+  key: string,
+  appPath: string,
+  page: PageCapture,
+  signIn?: { login: boolean; signInPaths?: string[] },
+): void {
   if (page.failed) return;
+  if (signIn?.login && maybeSignedOut(page, signIn.signInPaths)) return;
   const { json, png } = cacheFiles(root, sha, key, appPath);
   fs.mkdirSync(path.dirname(json), { recursive: true });
   if (page.image) fs.copyFileSync(page.image, png);
@@ -577,7 +599,7 @@ export async function compare(options: CompareOptions = {}): Promise<CompareResu
           return hit;
         }
         const page = await isolated(served.url, route.path, file);
-        if (cacheKey) writeCachedCapture(root, sha, cacheKey, route.path, page);
+        if (cacheKey) writeCachedCapture(root, sha, cacheKey, route.path, page, { login: !!login, signInPaths });
         return page;
       });
     if (snapshotFile && dataSnapshot?.restore === 'each') restoreData('before base captures');

@@ -132,7 +132,7 @@ These fields let `compare` capture pages behind sign-in, against a local backend
 - `network`: `live` turns off the read-only network layer in captured pages, so sign-in requests and backend writes go through. Use it only with a seeded local backend. The default is `read-only`.
 - `blockConvexWrites`: drops the Convex mutation and action messages that captured pages send over their WebSocket, so a page that writes on load cannot change what the other commit sees. Queries still run. Each page reports how many writes were dropped.
 - `hooks`: a module with optional `login` and `routePath` exports. The older `auth` field (a module whose default export is `login`) still works.
-- `signInPaths`: app paths of your sign-in screen. Optional. See [Signed-out captures](#signed-out-captures).
+- `signInPaths`: app paths of your sign-in screen, as a list of paths that start with `/`. Optional. Matched without regard to case. Any other value stops the run with a config error. See [Signed-out captures](#signed-out-captures).
 
 ```js
 // redline.hooks.mjs
@@ -162,9 +162,11 @@ Both commits are served from `127.0.0.1`, which shares cookies across ports, so 
 With a login hook, every capture at both commits should be signed in. If a capture shows the sign-in screen instead, it does not show the page, so Redline marks the page "Couldn't check" with a reason such as `Signed out at the base commit (ended on /signin/)`, not "Changed". The report also adds a notice with the count. A capture counts as signed out when:
 
 - it was redirected to a sign-in path: one of `signInPaths`, or a path under one. Without `signInPaths`, any path with a `login`, `log-in`, `log_in`, `signin`, `sign-in`, `sign_in`, `auth` or `sso` segment counts.
-- or, when `signInPaths` is not set, it showed a visible password field and the same page at the other commit did not. This covers apps that show the sign-in form in place, without a redirect. A password field at both commits, as on a change-password page, does not count.
+- or, when `signInPaths` is not set, it showed a visible password field and the same page at the other commit did not. This covers apps that show the sign-in form in place, without a redirect. A password field at both commits, as on a change-password page, does not count. Nor does one where the other commit's page was blank or showed an error screen, as when a change fixes a broken page.
 
 Set `signInPaths` when your sign-in screen has its own path. Then only those paths count, which is the most exact check.
+
+A broken page at head is still reported as "Broken" (HTTP 500 or above, an error screen, a new JavaScript error, or a page that is now blank), even when the base capture was signed out. Captures that may be signed out are not kept in the screenshot cache, so the next run takes them again.
 
 A page you ask for directly, such as `/login` itself, is captured as usual. Without a login hook, only a head-side redirect to a sign-in path is checked, and the reason is `Needs sign-in`.
 
