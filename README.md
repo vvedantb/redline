@@ -129,9 +129,9 @@ These fields let `compare` capture pages behind sign-in, against a local backend
 
 - `envFile`: a dotenv file passed to both builds and to the Next.js server as is. The usual strip of secret and Convex keys does not apply to it, so put only what the build needs in it, such as a local backend URL and a publishable auth key. Vite inlines its `VITE_*` keys into the build. A build made with other values is built again. Keep this file and `.redline/` out of git.
 - `network`: `live` turns off the read-only network layer in captured pages, so sign-in requests and backend writes go through. Use it only with a seeded local backend. The default is `read-only`.
+- `signOutPaths`: extra sign-out paths that page discovery never loads, such as `["/end-session"]`. A path under one counts too. See below.
 - `blockConvexWrites`: drops the Convex mutation and action messages that captured pages send over their WebSocket, so a page that writes on load cannot change what the other commit sees. Queries still run. Each page reports how many writes were dropped.
 - `hooks`: a module with optional `login` and `routePath` exports. The older `auth` field (a module whose default export is `login`) still works.
-- `signOutPaths`: extra sign-out paths that page discovery never loads, such as `["/end-session"]`. A path under one counts too. See below.
 
 ```js
 // redline.hooks.mjs

@@ -51,6 +51,8 @@ export interface CompareOptions {
   auth?: LoginHook | string;
   /** Hooks, or a module path that exports them: `login` and `routePath`. */
   hooks?: CompareHooks | string;
+  /** Sign-out paths the crawl never follows, on top of the built-in `logout`, `signout` and similar ones. */
+  signOutPaths?: string[];
   /** `build` serves production builds. `dev` runs each commit's dev server in turn. Default `build`. */
   serve?: ServeMode;
   /** Pages loaded at once. Default 4. */
@@ -61,8 +63,6 @@ export interface CompareOptions {
   hide?: string[];
   /** Paths or route patterns never captured, such as sign-in callbacks. */
   exclude?: string[];
-  /** Sign-out paths the crawl never follows, on top of the built-in `logout`, `signout` and similar ones. */
-  signOutPaths?: string[];
   /** Drop Convex mutations and actions sent by captured pages. */
   blockConvexWrites?: boolean;
   /** `affected`: capture only pages the changed files reach, plus a sample of the rest. Default `all`. */
@@ -135,12 +135,12 @@ export interface RedlineConfig {
   auth?: string;
   /** Module, relative to the app directory, exporting `login` and `routePath`. */
   hooks?: string;
+  signOutPaths?: string[];
   serve?: ServeMode;
   concurrency?: number;
   mask?: string[];
   hide?: string[];
   exclude?: string[];
-  signOutPaths?: string[];
   blockConvexWrites?: boolean;
   scope?: CaptureScope;
   sample?: number;
@@ -416,12 +416,12 @@ export async function compare(options: CompareOptions = {}): Promise<CompareResu
   const env = readEnvFile(root, options.envFile ?? config.envFile);
   const network = options.network ?? config.network ?? 'read-only';
   const { login, routePath } = await loadHooks(root, options.hooks ?? config.hooks, options.auth ?? config.auth);
+  const signOutPaths = [...(config.signOutPaths ?? []), ...(options.signOutPaths ?? [])];
   const serve = options.serve ?? config.serve ?? 'build';
   const concurrency = Math.max(1, options.concurrency ?? config.concurrency ?? DEFAULT_CONCURRENCY);
   const mask = [...(config.mask ?? []), ...(options.mask ?? [])];
   const hide = [...(config.hide ?? []), ...(options.hide ?? [])];
   const exclude = new Set([...(config.exclude ?? []), ...(options.exclude ?? [])]);
-  const signOutPaths = [...(config.signOutPaths ?? []), ...(options.signOutPaths ?? [])];
   const blockConvexWrites = options.blockConvexWrites ?? config.blockConvexWrites ?? false;
   const scope = options.scope ?? config.scope ?? 'all';
   const sample = options.sample ?? config.sample ?? DEFAULT_SAMPLE;
