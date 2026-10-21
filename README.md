@@ -250,8 +250,8 @@ Plugin options:
 | `enabled` | `true` in `vite dev`, `false` in `vite build` | `false` turns off tagging and makes `/__redline/*` report `enabled: false`. `true` also tags production builds and serves the endpoints from `vite preview`. |
 | `baselineFile` | `<root>/.redline/baseline.json` | Where the pinned baseline is stored. |
 | `extensions` | `['tsx', 'jsx', 'ts', 'js', 'css']` | File types included in git diffs. |
-| `prNotes` | `true` | Read [change notes](#change-notes) from the current branch's PR with `gh`. `false` reads `redline.notes.json` only. |
 | `history` | `{ maxBuilds: 5, thumbnails: true }` | History builds. `maxBuilds` is how many ready builds stay on disk. `thumbnails: false` skips Playwright screenshots. `networkFixtures` is the fixtures file for the [read-only network layer](#history-network-read-only) (default `.redline/network-fixtures.json`). `false` turns History builds off. |
+| `prNotes` | `true` | Read [change notes](#change-notes) from the current branch's PR with `gh`. `false` reads `redline.notes.json` only. |
 
 Set `REDLINE=0` in the environment to turn Redline off whatever `enabled` says. History builds use this.
 
@@ -307,7 +307,7 @@ export function DevTools() {
 }
 ```
 
-`withRedline(config, options)` accepts `enabled`, `apiRoute` (default `/api/redline`), `baselineFile`, `extensions` and `prNotes` (as for Vite). When `NODE_ENV` is `production` and `enabled` is not `true`, it returns your config unchanged and the route handler reports `enabled: false`. `REDLINE=0` in the environment does the same, even with `enabled: true`. In dev it also sets `NEXT_PUBLIC_REDLINE=1`.
+`withRedline(config, options)` accepts `enabled`, `apiRoute` (default `/api/redline`), `baselineFile` and `extensions`. When `NODE_ENV` is `production` and `enabled` is not `true`, it returns your config unchanged and the route handler reports `enabled: false`. `REDLINE=0` in the environment does the same, even with `enabled: true`. In dev it also sets `NEXT_PUBLIC_REDLINE=1`.
 
 The Next.js integration is covered by unit tests. The E2E suite runs against the Vite demo.
 
@@ -584,7 +584,7 @@ Notes come from two places. Both use the same key: a path, with an optional line
    }
    ```
 
-2. **The PR description**, in a section headed `## Redline notes`. The dev server reads the current branch's PR with `gh pr view --json body` and keeps it for a minute. The lookup runs in the background, so a note can take one poll (2 s) to show. If `gh` is missing, not signed in or finds no PR, this source is skipped without an error. Turn it off with `prNotes: false`.
+2. **The PR description**, in a section headed `## Redline notes`. The dev server reads the current branch's PR with `gh pr view --json body` and keeps it for a minute. The lookup runs in the background, so a note can take one poll (2 s) to show. If `gh` is missing, not signed in or finds no PR, this source is skipped without an error. Turn it off with `prNotes: false` in `redline()`, `withRedline()` or `createRedlineHandler()`.
 
    ```md
    ## Redline notes

@@ -16,10 +16,10 @@ export interface RedlineNextOptions {
   enabled?: boolean;
   /** Route that serves the handler from `createRedlineHandler`. Default `/api/redline`. */
   apiRoute?: string;
-  baselineFile?: string;
-  extensions?: string[];
   /** Read `## Redline notes` from the current branch's PR with `gh`. Default `true`. `redline.notes.json` is always read. */
   prNotes?: boolean;
+  baselineFile?: string;
+  extensions?: string[];
 }
 
 export interface RedlineNextHistoryOptions extends RedlineHistoryOptions {
