@@ -250,6 +250,7 @@ Plugin options:
 | `enabled` | `true` in `vite dev`, `false` in `vite build` | `false` turns off tagging and makes `/__redline/*` report `enabled: false`. `true` also tags production builds and serves the endpoints from `vite preview`. |
 | `baselineFile` | `<root>/.redline/baseline.json` | Where the pinned baseline is stored. |
 | `extensions` | `['tsx', 'jsx', 'ts', 'js', 'css']` | File types included in git diffs. |
+| `prNotes` | `true` | Read [change notes](#change-notes) from the current branch's PR with `gh`. `false` reads `redline.notes.json` only. |
 | `history` | `{ maxBuilds: 5, thumbnails: true }` | History builds. `maxBuilds` is how many ready builds stay on disk. `thumbnails: false` skips Playwright screenshots. `networkFixtures` is the fixtures file for the [read-only network layer](#history-network-read-only) (default `.redline/network-fixtures.json`). `false` turns History builds off. |
 
 Set `REDLINE=0` in the environment to turn Redline off whatever `enabled` says. History builds use this.
@@ -306,7 +307,7 @@ export function DevTools() {
 }
 ```
 
-`withRedline(config, options)` accepts `enabled`, `apiRoute` (default `/api/redline`), `baselineFile` and `extensions`. When `NODE_ENV` is `production` and `enabled` is not `true`, it returns your config unchanged and the route handler reports `enabled: false`. `REDLINE=0` in the environment does the same, even with `enabled: true`. In dev it also sets `NEXT_PUBLIC_REDLINE=1`.
+`withRedline(config, options)` accepts `enabled`, `apiRoute` (default `/api/redline`), `baselineFile`, `extensions` and `prNotes` (as for Vite). When `NODE_ENV` is `production` and `enabled` is not `true`, it returns your config unchanged and the route handler reports `enabled: false`. `REDLINE=0` in the environment does the same, even with `enabled: true`. In dev it also sets `NEXT_PUBLIC_REDLINE=1`.
 
 The Next.js integration is covered by unit tests. The E2E suite runs against the Vite demo.
 
@@ -352,7 +353,7 @@ These helpers also mirror the baseline to `localStorage` (`redline:baseline`). I
 
 | Endpoint | Returns |
 | --- | --- |
-| `GET /__redline/diff[?baseline=<ref>]` | Parsed hunks: working tree vs the pinned baseline, or vs `<ref>` when given. |
+| `GET /__redline/diff[?baseline=<ref>]` | Parsed hunks: working tree vs the pinned baseline, or vs `<ref>` when given. A hunk with a [change note](#change-notes) has `note` and `noteSource` (`file` or `pr`). |
 | `GET /__redline/baseline` | `HEAD` SHA and the pinned baseline. |
 | `GET /__redline/log[?limit=<n>]` | Commits reachable from `HEAD`, newest first: `sha`, `shortSha`, `subject`, `author`, `date` (ISO 8601). Default limit 50, maximum 200. Uses `git log`. |
 | `GET /__redline/file?path=<path>[&ref=<ref>]` | `{ path, ref, content }` for a file at a commit (default `HEAD`). Uses `git show`. `path` is relative to the project root and must stay inside it. Only files with a configured extension can be read. |
@@ -562,6 +563,53 @@ Call `refreshRedline()` to make the overlay refetch straight away. It otherwise 
 - If an element is entirely new, its tagged children are folded into it, so it gets one outline.
 - Lines outside any JSX host element (imports, helpers, types) are ignored. CSS changes are returned by the diff endpoint but are not outlined, because CSS lines do not map to elements.
 - Only host elements are tagged. A change to a component's props at the call site maps to the nearest host element around the call.
+
+#### Change notes
+
+The hunk panel can show a plain-English note before the code, for reviewers who do not read diffs. Redline does not write the notes, and it does not call an LLM. Whoever makes the change writes them, usually the coding agent. When a hunk has a note:
+
+- the panel shows the note first, with the code behind **Show code**;
+- the outline label shows the note on hover.
+
+A hunk with no note keeps the code view.
+
+Notes come from two places. Both use the same key: a path, with an optional line range (`path`, `path:12` or `path:12-20`).
+
+1. **`redline.notes.json`**, committed in the app root. It wins over the PR description.
+
+   ```json
+   {
+     "app/(commissioner)/domcare/list/ExportButton.tsx": "The export button is now red and larger.",
+     "components/Table.tsx:12-20": "Rows are taller, so more of each name shows."
+   }
+   ```
+
+2. **The PR description**, in a section headed `## Redline notes`. The dev server reads the current branch's PR with `gh pr view --json body` and keeps it for a minute. The lookup runs in the background, so a note can take one poll (2 s) to show. If `gh` is missing, not signed in or finds no PR, this source is skipped without an error. Turn it off with `prNotes: false`.
+
+   ```md
+   ## Redline notes
+
+   - app/(commissioner)/domcare/list/ExportButton.tsx: The export button is now red and larger.
+   - components/Table.tsx:12-20: Rows are taller, so more of each name shows.
+   ```
+
+   One bullet (`-` or `*`) per note: the key, a colon and a space, then the note. The path can be in backticks. An indented line under a bullet continues its note. The section ends at the next heading.
+
+Matching:
+
+- Paths are relative to the app root, or to the repository top (`apps/web/app/...`). Both work.
+- Line ranges use line numbers in the changed (new) file.
+- A note with a line range applies to every hunk that overlaps it. A hunk that overlaps several gets all of them.
+- A note without a range applies to every hunk in the file that no ranged note covers.
+- For each hunk, a note from `redline.notes.json` wins over one from the PR.
+
+To get notes from your coding agent, add something like this to its instructions (`AGENTS.md`, `CLAUDE.md` or similar):
+
+```md
+In every PR description, add a "## Redline notes" section. Write one bullet per changed UI file:
+"- <path>[:<start>-<end>]: <what a user will see change, in one plain sentence>".
+Write for a business reviewer: what changed on screen, not how the code changed.
+```
 
 ## Run the demo
 

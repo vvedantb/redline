@@ -18,6 +18,8 @@ export interface RedlineNextOptions {
   apiRoute?: string;
   baselineFile?: string;
   extensions?: string[];
+  /** Read `## Redline notes` from the current branch's PR with `gh`. Default `true`. `redline.notes.json` is always read. */
+  prNotes?: boolean;
 }
 
 export interface RedlineNextHistoryOptions extends RedlineHistoryOptions {
@@ -259,6 +261,7 @@ export function createRedlineHandler(options: RedlineHandlerOptions = {}) {
       extensions: options.extensions ?? DEFAULT_EXTENSIONS,
       enabled,
       builds: enabled && options.history !== false ? sharedBuilds(root, options.history ?? {}) : undefined,
+      prBody: options.prNotes === false ? false : undefined,
     };
   };
 

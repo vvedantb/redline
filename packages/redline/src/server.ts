@@ -5,6 +5,7 @@ import path from 'node:path';
 import { createTwoFilesPatch } from 'diff';
 import type { BuildManager } from './build';
 import { parseUnifiedDiff } from './diff';
+import { attachNotes, parsePrNotes, readNotesFile, sharedPrBody } from './notes';
 import { normalizePath } from './source';
 import type { CommitInfo, DiffFile, DiffResponse, StoredBaseline } from './types';
 
@@ -19,6 +20,11 @@ export interface RedlineServerOptions {
   enabled?: boolean;
   /** Per-commit History builds. Without it `/__redline/build` answers 501. */
   builds?: BuildManager;
+  /**
+   * The PR description that `## Redline notes` are read from. Default: the current branch's PR,
+   * from `gh pr view`, cached for a minute. `false` reads notes from `redline.notes.json` only.
+   */
+  prBody?: (() => string | null) | false;
 }
 
 export const DEFAULT_EXTENSIONS = ['tsx', 'jsx', 'ts', 'js', 'css'];
@@ -154,7 +160,40 @@ export function diffGit(root: string, sha: string, extensions = DEFAULT_EXTENSIO
   return files;
 }
 
+const repoPrefixes = new Map<string, string>();
+
+/** The root's path from the repository top, such as `apps/web/`, or `''` at the top. */
+function repoPrefix(root: string): string {
+  let prefix = repoPrefixes.get(root);
+  if (prefix === undefined) {
+    try {
+      prefix = git(root, ['rev-parse', '--show-prefix']).trim();
+    } catch {
+      prefix = '';
+    }
+    repoPrefixes.set(root, prefix);
+  }
+  return prefix;
+}
+
+/**
+ * Add notes to the hunks of a diff. Nothing is read when nothing changed, so a clean tree never
+ * runs `gh`. A broken `redline.notes.json` is reported as the diff's `error`.
+ */
+function withNotes(opts: RedlineServerOptions, diff: DiffResponse): DiffResponse {
+  if (!diff.files.length) return diff;
+  const fromFile = readNotesFile(opts.root);
+  const body = opts.prBody === false ? null : (opts.prBody ?? (() => sharedPrBody(opts.root).get()))();
+  const notes = [...fromFile.notes, ...(body ? parsePrNotes(body) : [])];
+  const files = attachNotes(diff.files, notes, repoPrefix(opts.root));
+  return { ...diff, files, ...(fromFile.error && !diff.error ? { error: fromFile.error } : {}) };
+}
+
 export function computeDiff(opts: RedlineServerOptions, baselineOverride?: string | null): DiffResponse {
+  return withNotes(opts, rawDiff(opts, baselineOverride));
+}
+
+function rawDiff(opts: RedlineServerOptions, baselineOverride?: string | null): DiffResponse {
   const enabled = opts.enabled !== false;
   const headSha = getHeadSha(opts.root);
   if (!enabled) return { enabled, mode: 'none', baselineSha: null, headSha, files: [] };

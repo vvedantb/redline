@@ -88,6 +88,38 @@ test('outlines only changed regions and opens the hunk on click', async ({ page,
   await expect(panel).toBeHidden();
 });
 
+test('shows the plain-English note first, with the code behind "Show code"', async ({ page, request }) => {
+  const notesFile = path.join(demoRoot, 'redline.notes.json');
+  const note = 'The headline now says what Redline does.';
+  fs.writeFileSync(notesFile, JSON.stringify({ [HERO]: note }));
+  try {
+    await pinCommitA(request);
+    await page.goto('/?redline=1');
+    const titleSource = await page.locator('.hero-title').getAttribute('data-redline-source');
+    const titleLine = titleSource!.split(':')[1].split('-')[0];
+    const label = page.getByRole('button', { name: `Show diff for ${HERO}:${titleLine}` });
+    // The note is on the label's hover text.
+    await expect(label).toHaveAttribute('title', new RegExp(`^${note}`));
+    await label.click();
+
+    const panel = page.getByRole('dialog', { name: 'Redline diff' });
+    await expect(panel.locator('[data-redline-note]')).toHaveText(note);
+    await expect(panel.locator('[data-redline-patch]')).toBeHidden();
+    await panel.getByRole('button', { name: 'Show code' }).click();
+    await expect(panel.locator('[data-redline-patch]')).toContainText('+      <h1 className="hero-title">Ship UI changes you can see</h1>');
+    await panel.getByRole('button', { name: 'Hide code' }).click();
+    await expect(panel.locator('[data-redline-patch]')).toBeHidden();
+    await page.keyboard.press('Escape');
+
+    // A hunk with no note keeps the code view.
+    await page.locator('[data-redline-hit]').filter({ hasText: /^Stats\.tsx:/ }).first().click();
+    await expect(panel.locator('[data-redline-note]')).toHaveCount(0);
+    await expect(panel.locator('[data-redline-patch]')).toBeVisible();
+  } finally {
+    fs.rmSync(notesFile, { force: true });
+  }
+});
+
 test('re-pinning to the current content clears outlines', async ({ page, request }) => {
   await pinCommitA(request);
   await page.goto('/?redline=1');
