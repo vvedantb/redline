@@ -257,6 +257,15 @@ function fakeServers(opts: { listen?: boolean; exitAt?: number } = {}) {
         res.end('<!doctype html><html><head><title>x</title></head><body></body></html>');
         return;
       }
+      if (req.url?.endsWith('/api/write')) {
+        let body = '';
+        req.on('data', (chunk: Buffer) => (body += chunk));
+        req.on('end', () => {
+          res.setHeader('Set-Cookie', ['a=1; Path=/', 'b=2; Path=/']);
+          res.end(`${req.method} ${body}`);
+        });
+        return;
+      }
       res.setHeader('Content-Type', 'text/plain');
       res.end(`served ${req.url} cwd=${input.cwd} redline=${input.env.REDLINE}`);
     });
@@ -534,6 +543,34 @@ describe('Next.js History builds', () => {
       const port = servers.started[0].port;
       builds.remove(shas[0]);
       expect(servers.killed).toEqual([port]);
+    });
+
+    it('serves a root build through a proxy that adds the read-only network layer', async () => {
+      const servers = fakeServers();
+      const builds = new BuildManager({ root: top, framework: 'next', exec: fakeNextExec(top).exec, capture: false, spawnServer: servers.spawn, mount: 'root' });
+      builds.enqueue(shas[0]);
+      await builds.whenIdle();
+      expect(builds.get(shas[0])?.basePath).toBe('/');
+
+      const preview = await builds.preview(shas[0]);
+      const at = (p: string, init?: RequestInit) => fetch(new URL(p, preview.url), init);
+      try {
+        expect(preview.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/$/);
+        expect(preview.url).not.toContain(String(servers.started[0].port));
+        // Paths reach the standalone server at the root, unchanged.
+        expect(await (await at('/about?tab=1')).text()).toContain('served /about?tab=1');
+        expect(await (await at('/page.html')).text()).toContain('<head><script src="/__redline/network/bootstrap.js"></script><title>');
+        expect(await (await at('/__redline/network/bootstrap.js')).text()).toContain('installRedlineNetwork(window)');
+        expect(await (await at('/__redline/network/fixtures')).json()).toEqual({ version: 1, entries: [] });
+        // Other methods are forwarded with their body; every cookie comes back.
+        const write = await at('/api/write', { method: 'POST', body: 'x=1' });
+        expect(await write.text()).toBe('POST x=1');
+        expect(write.headers.getSetCookie()).toEqual(['a=1; Path=/', 'b=2; Path=/']);
+      } finally {
+        await preview.close();
+      }
+      // Closing the preview stops the server it started.
+      expect(servers.killed).toEqual([servers.started[0].port]);
     });
 
     it('reports a server that fails to start as 502', async () => {

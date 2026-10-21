@@ -15,8 +15,11 @@ import {
   isNextApp,
   nextBin,
   nextBuildFlags,
+  proxyPage,
+  sendWebResponse,
   snapshotEnv,
   standaloneServerDir,
+  toWebRequest,
   writeSnapshotConfig,
   type SpawnServerFn,
 } from './standalone';
@@ -114,7 +117,8 @@ export function buildPaths(root: string, sha: string, mount: BuildMount = 'histo
   if (!isFullSha(sha)) throw new Error(`Expected a full commit SHA: ${sha}`);
   const base = path.join(root, '.redline');
   const dir = path.join(buildsDir(root, mount), sha);
-  const snapshot = path.join(base, 'snapshots', sha);
+  // Root builds keep their own snapshots, so removing one never deletes a History thumbnail.
+  const snapshot = path.join(base, mount === 'root' ? 'snapshots-root' : 'snapshots', sha);
   return {
     dir,
     dist: path.join(dir, 'dist'),
@@ -772,25 +776,50 @@ export class BuildManager {
     return this.openPreview(sha, this.paths(sha));
   }
 
-  /** Serve a build on localhost for capture. Vite: a throwaway static server. Next.js: its standalone server. */
+  /**
+   * Serve a build on localhost for capture. Vite: a throwaway static server. Next.js: its
+   * standalone server, behind a throwaway proxy for a `root` mount (see `proxyRoot`).
+   */
   private async openPreview(sha: string, p: BuildPaths): Promise<{ url: string; close: () => Promise<void> }> {
     const basePath = this.basePath(sha);
     if (this.framework === 'next') {
       const wasRunning = this.servers.has(sha);
       const origin = await this.startServer(sha);
-      return { url: origin + basePath, close: async () => (wasRunning ? undefined : this.servers.stop(sha)) };
+      const stop = async () => (wasRunning ? undefined : this.servers.stop(sha));
+      if (this.mount === 'history') return { url: origin + basePath, close: stop };
+      const proxy = await this.proxyRoot(origin);
+      return {
+        url: proxy.url,
+        close: async () => {
+          await proxy.close();
+          await stop();
+        },
+      };
     }
-    const server = http.createServer((req, res) => {
+    return listenLocal(basePath, (req, res) => {
       const pathname = new URL(req.url ?? '/', 'http://localhost').pathname;
       if (sendNetworkAsset(res, pathname, this.fixturesFile)) return;
       const file = pathname.startsWith(basePath) ? resolveStaticFile(p.dist, pathname.slice(basePath.length)) : null;
       if (file) sendHistoryFile(res, file);
       else res.writeHead(404).end();
     });
-    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-    const address = server.address();
-    const port = address && typeof address === 'object' ? address.port : 0;
-    return { url: `http://127.0.0.1:${port}${basePath}`, close: () => new Promise((resolve) => server.close(() => resolve())) };
+  }
+
+  /**
+   * A History build's pages get the read-only network layer from the dev server's proxy. A root
+   * build has no dev server in front, so this proxy serves `/__redline/network/*` and adds the
+   * bootstrap to HTML pages. Every other request goes to the standalone server unchanged.
+   */
+  private proxyRoot(origin: string): Promise<{ url: string; close: () => Promise<void> }> {
+    return listenLocal('/', async (req, res) => {
+      const url = new URL(req.url ?? '/', 'http://localhost');
+      if ((req.method === 'GET' || req.method === 'HEAD') && sendNetworkAsset(res, url.pathname, this.fixturesFile, req.method)) return;
+      try {
+        await sendWebResponse(res, await proxyPage(await toWebRequest(req), origin, url.pathname + url.search));
+      } catch {
+        res.destroy();
+      }
+    });
   }
 
   private async captureThumbnail(sha: string, p: BuildPaths, log: Log): Promise<void> {
@@ -825,6 +854,22 @@ export class BuildManager {
       .sort((a, b) => score(b) - score(a));
     for (const m of ready.slice(Math.max(max - 1, 0))) this.remove(m.sha);
   }
+}
+
+/** An HTTP server on a free localhost port. `url` is its origin plus `basePath`. */
+async function listenLocal(basePath: string, handler: http.RequestListener): Promise<{ url: string; close: () => Promise<void> }> {
+  const server = http.createServer(handler);
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  const port = address && typeof address === 'object' ? address.port : 0;
+  return {
+    url: `http://127.0.0.1:${port}${basePath}`,
+    close: () =>
+      new Promise((resolve) => {
+        server.close(() => resolve());
+        server.closeAllConnections();
+      }),
+  };
 }
 
 interface PageLike {

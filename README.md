@@ -31,7 +31,7 @@ Click a page for before and after side by side with numbered boxes on the change
 
 ## How `compare` works
 
-1. **Build both commits.** Each commit is built in its own git worktree with the same engine as the overlay's History builds, but at the root: `vite build --base /`, or `next build` with `output: 'standalone'` and no `basePath`. Each build is served at the root of its own port on `127.0.0.1`, so code that fetches or redirects to root-absolute paths (`fetch('/api/x')`, a middleware redirect to `/mfa/`) works as in production. Your working tree is never touched. `node_modules` is linked from the main tree when the lockfile is unchanged; otherwise the worktree installs. Builds are cached by commit under `.redline/builds-root/`, apart from the overlay's History builds. Vite pages run with History's read-only network layer, so they cannot write to your APIs. Next.js pages are served straight from the standalone server and do not load that layer: use `blockConvexWrites` and a disposable backend there.
+1. **Build both commits.** Each commit is built in its own git worktree with the same engine as the overlay's History builds, but at the root: `vite build --base /`, or `next build` with `output: 'standalone'` and no `basePath`. Each build is served at the root of its own port on `127.0.0.1`, so code that fetches or redirects to root-absolute paths (`fetch('/api/x')`, a middleware redirect to `/mfa/`) works as in production. Your working tree is never touched. `node_modules` is linked from the main tree when the lockfile is unchanged; otherwise the worktree installs. Builds are cached by commit under `.redline/builds-root/`, apart from the overlay's History builds, so the first `compare` after upgrading from a version that built under `/__redline/h/<sha>/` builds both commits again, and cached screenshots in `.redline/captures` are not reused. The built pages run with History's read-only network layer, so they cannot write to your APIs. Vite pages get it from the static server. Next.js pages get it from a small local proxy in front of the standalone server, which serves `/__redline/network/*` and adds the bootstrap to every HTML page; every other request is forwarded unchanged.
 2. **Find the pages.** File-system routes (Next.js `app/` and `pages/`; Vite `src/pages`, `src/routes` and React Router declarations), a crawl of same-origin links from `/`, `sitemap.xml`, and seeds from you. The crawl loads every page in the first two hops, then only the first page of each dynamic route for two more, up to 150 page loads. A dynamic route such as `/blog/[slug]` is captured only through a concrete URL, and keeps one example besides seeds. When a route has an example, its static sub-routes get one too: `/blog/hello` gives `/blog/hello/comments` for `/blog/[slug]/comments`. This covers tabs reached by buttons rather than links.
 3. **Capture.** Every page at both commits in headless Chromium, 4 at a time (`--concurrency`), set up to repeat: fixed clock, seeded `Math.random`, reduced motion, animations and transitions off, caret hidden, dev overlays hidden, UTC and `en-US`, service workers off, wait for network idle and fonts, scroll to trigger lazy content. Full-page screenshots, cut at 4000px.
 4. **Diff.** Pixel diff with [pixelmatch](https://github.com/mapbox/pixelmatch), after a light 3x3 blur of both screenshots so text drawn at a different sub-pixel offset does not count (`diffImages(a, b, { blur: false })` turns it off). Changed pixels are grouped into boxes; specks under 100 square pixels are dropped, and so is a box whose pixels only moved by up to 2px. Each changed page is then loaded once more at head: areas that also differ between those two loads are live data or timing, not the change, and are dropped. The report counts them and says how to `mask` them.
@@ -130,7 +130,7 @@ These fields let `compare` capture pages behind sign-in, against a local backend
 - `envFile`: a dotenv file passed to both builds and to the Next.js server as is. The usual strip of secret and Convex keys does not apply to it, so put only what the build needs in it, such as a local backend URL and a publishable auth key. Vite inlines its `VITE_*` keys into the build. A build made with other values is built again. Keep this file and `.redline/` out of git.
 - `network`: `live` turns off the read-only network layer in captured pages, so sign-in requests and backend writes go through. Use it only with a seeded local backend. The default is `read-only`.
 - `blockConvexWrites`: drops the Convex mutation and action messages that captured pages send over their WebSocket, so a page that writes on load cannot change what the other commit sees. Queries still run. Each page reports how many writes were dropped.
-- `hooks`: a module with optional `login` and `routePath` exports. The older `auth` field (a module whose default export is `login`) still works.
+- `hooks`: a module with optional `login` and `routePath` exports. The older `auth` field (a module whose default export is `login`) still works. `login` gets a `baseUrl` at the root of the build's port, such as `http://127.0.0.1:4321`. Versions that built under `/__redline/h/<sha>/` passed that prefix in `baseUrl`; a hook that removed or added it by hand must stop doing so.
 
 ```js
 // redline.hooks.mjs
@@ -138,7 +138,8 @@ These fields let `compare` capture pages behind sign-in, against a local backend
 // Signs the capture browser in. Runs once for each commit, before pages are found. Cookies and
 // storage it sets are kept for every capture. Secrets stay in Node and never reach the build.
 export async function login({ page, baseUrl, side }) {
-  // baseUrl is where this commit is served, e.g. http://127.0.0.1:4321 (no path: builds are served at the root)
+  // baseUrl is where this commit is served, at the root of its own port: e.g. http://127.0.0.1:4321,
+  // with no /__redline/h/<sha> prefix.
   await page.goto(`${baseUrl}/sign-in`);
   await page.fill('input[name=email]', process.env.TEST_USER_EMAIL);
   await page.fill('input[name=password]', process.env.TEST_USER_PASSWORD);
@@ -425,7 +426,7 @@ Disk layout (`.redline/` should be in `.gitignore`):
   builds/<sha>/build.log     output of every step
   builds/<sha>/dist/         the static build, served at /__redline/h/<sha>/
   builds-root/<sha>/         compare builds, made at / and served at the root of their own port
-  snapshots/<sha>/thumb.png  thumbnail, when Playwright is available
+  snapshots/<sha>/thumb.png  thumbnail, when Playwright is available (snapshots-root/<sha>/ for compare)
   worktrees/<sha>/           only while a build runs (worktrees-root/<sha>/ for compare)
 ```
 

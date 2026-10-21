@@ -247,6 +247,50 @@ describe('BuildManager', () => {
     }
   });
 
+  it('never deletes History builds, worktrees or thumbnails from a root manager', async () => {
+    const fake = fakeExec();
+    const history = new BuildManager({
+      root,
+      exec: fake.exec,
+      capture: async ({ out }) => {
+        fs.writeFileSync(out, 'png');
+        return true;
+      },
+    });
+    history.enqueue(shas[0]);
+    await history.whenIdle();
+    const kept = buildPaths(root, shas[0]);
+    fs.mkdirSync(kept.worktree, { recursive: true });
+
+    const builds = new BuildManager({
+      root,
+      exec: fake.exec,
+      capture: async ({ out }) => {
+        fs.writeFileSync(out, 'root png');
+        return true;
+      },
+      mount: 'root',
+      maxReady: 1,
+    });
+    builds.enqueue(shas[0]);
+    await builds.whenIdle();
+    expect(buildPaths(root, shas[0], 'root').thumbnail).not.toBe(kept.thumbnail);
+    // Building another commit evicts the root build of shas[0]; removing that one cleans up too.
+    builds.enqueue(shas[1]);
+    await builds.whenIdle();
+    expect(builds.get(shas[0])).toBeNull();
+    expect(builds.remove(shas[1])).toBe(true);
+    for (const sha of [shas[0], shas[1]]) {
+      expect(fs.existsSync(buildPaths(root, sha, 'root').dir)).toBe(false);
+      expect(fs.existsSync(buildPaths(root, sha, 'root').snapshot)).toBe(false);
+    }
+
+    expect(fs.readFileSync(kept.thumbnail, 'utf8')).toBe('png');
+    expect(fs.existsSync(path.join(kept.dist, 'index.html'))).toBe(true);
+    expect(fs.existsSync(kept.worktree)).toBe(true);
+    expect(history.thumbnailFile(shas[0])).toBe(kept.thumbnail);
+  });
+
   it('returns the existing job instead of queueing twice', async () => {
     const fake = fakeExec();
     const builds = new BuildManager({ root, exec: fake.exec, capture: false });
