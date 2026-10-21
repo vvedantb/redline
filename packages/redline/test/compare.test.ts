@@ -6,6 +6,7 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { parseCli } from '../src/cli';
 import { appPathOf, urlFor, type PageCapture } from '../src/compare/capture';
 import { BLANK_BOTH, classify, rankPages } from '../src/compare/classify';
+import { readCachedCapture, readConfig, writeCachedCapture } from '../src/compare/compare';
 import { diffImages, regionsFromMask } from '../src/compare/pixels';
 import { renderIndex, renderPage, writeReport, type Report, type ReportPage } from '../src/compare/report';
 import { capRoutes, matchPattern, parseSitemap, patternFor, type DiscoveredRoute } from '../src/routes/discover';
@@ -171,6 +172,73 @@ describe('classify', () => {
     expect(classify({ ...both, before: page({ content: 0 }), after: page({ content: 0 }) })).toEqual({ status: 'skipped', reason: BLANK_BOTH });
   });
 
+  describe('with a login hook', () => {
+    const login = { ...both, login: true, regions: [box] };
+
+    it("marks a page that ended on a sign-in screen at either commit as couldn't check", () => {
+      // Every base capture redirected to the sign-in page, head was signed in.
+      expect(classify({ ...login, before: page({ finalPath: '/signin' }), after: page() })).toEqual({
+        status: 'skipped',
+        reason: 'Signed out at the base commit (ended on /signin)',
+      });
+      expect(classify({ ...login, before: page(), after: page({ finalPath: '/accounts/log_in' }) })).toEqual({
+        status: 'skipped',
+        reason: 'Signed out at the head commit (ended on /accounts/log_in)',
+      });
+      expect(classify({ ...login, before: page({ finalPath: '/sign_in' }), after: page({ finalPath: '/sign_in' }) }).reason).toBe(
+        'Signed out at both commits (ended on /sign_in)',
+      );
+    });
+
+    it('uses signInPaths instead of the built-in pattern when set', () => {
+      const signInPaths = ['/welcome/'];
+      expect(classify({ ...login, signInPaths, before: page({ finalPath: '/welcome' }), after: page() }).reason).toBe(
+        'Signed out at the base commit (ended on /welcome)',
+      );
+      expect(classify({ ...login, signInPaths, before: page({ finalPath: '/welcome/back' }), after: page() }).status).toBe('skipped');
+      // With signInPaths set, the built-in pattern and the password-field check are not used.
+      expect(classify({ ...login, signInPaths, before: page({ finalPath: '/login' }), after: page() }).status).toBe('changed');
+      expect(classify({ ...login, signInPaths, before: page(), after: page({ signInForm: true }) }).status).toBe('changed');
+    });
+
+    it('marks a sign-in form shown in place at one commit only', () => {
+      expect(classify({ ...login, before: page({ signInForm: true }), after: page() })).toEqual({
+        status: 'skipped',
+        reason: 'Signed out at the base commit (showed a sign-in form)',
+      });
+      // A password field at both commits is part of the page, such as a change-password form.
+      expect(classify({ ...login, before: page({ signInForm: true }), after: page({ signInForm: true }) }).status).toBe('changed');
+    });
+
+    it('reports a broken head as broken even when base is signed out', () => {
+      const base = page({ finalPath: '/signin', signInForm: true });
+      expect(classify({ ...login, before: base, after: page({ status: 500 }) }).status).toBe('broken');
+      expect(classify({ ...login, before: base, after: page({ appError: true }) }).status).toBe('broken');
+      expect(classify({ ...login, before: base, after: page({ errors: ['TypeError: x is undefined'] }) }).status).toBe('broken');
+      expect(classify({ ...login, before: base, after: page({ content: 0 }) })).toEqual({ status: 'broken', reason: 'The page is now blank' });
+    });
+
+    it('does not count a password field when the other commit is blank or an error screen', () => {
+      // A fix for a blank or broken page that now shows a form with a password field.
+      expect(classify({ ...login, before: page({ content: 0 }), after: page({ signInForm: true }) }).status).toBe('changed');
+      expect(classify({ ...login, before: page({ appError: true }), after: page({ signInForm: true }) }).status).toBe('changed');
+    });
+
+    it('matches sign-in paths case-insensitively', () => {
+      expect(classify({ ...login, before: page({ finalPath: '/SignIn' }), after: page() }).status).toBe('skipped');
+      expect(classify({ ...login, signInPaths: ['/Welcome'], before: page({ finalPath: '/welcome/' }), after: page() }).status).toBe('skipped');
+    });
+
+    it('still captures the sign-in page itself', () => {
+      const signInPage = page({ path: '/login', finalPath: '/login', signInForm: true });
+      expect(classify({ ...login, before: signInPage, after: signInPage }).status).toBe('changed');
+    });
+  });
+
+  it('needs a login hook to treat a base-side sign-in screen as signed out', () => {
+    expect(classify({ ...both, regions: [box], before: page({ signInForm: true }), after: page() }).status).toBe('changed');
+  });
+
   it('ranks broken first, then changed pages with a direct cause', () => {
     const p = (path: string, status: ReportPage['status'], depth?: number, changedRatio = 0) => ({ path, status, suspects: depth === undefined ? [] : [{ file: 'f', depth }], changedRatio });
     const ranked = rankPages([p('/u', 'unchanged'), p('/c2', 'changed', 3, 0.5), p('/c1', 'changed', 0, 0.01), p('/b', 'broken'), p('/n', 'added'), p('/c3', 'changed', 3, 0.9)]);
@@ -241,5 +309,47 @@ describe('parseCli', () => {
     expect(() => parseCli(['diff'])).toThrow('Unknown command: diff');
     expect(() => parseCli(['compare', '--max-routes', '0'])).toThrow('--max-routes');
     expect(() => parseCli(['compare', '--viewport', 'big'])).toThrow('--viewport');
+  });
+});
+
+describe('capture cache', () => {
+  const png = path.join(tmp, 'cache-shot.png');
+  fs.writeFileSync(png, 'png');
+  const signIn = { login: true };
+  const roundTrip = (appPath: string, capture: PageCapture, opts?: { login: boolean; signInPaths?: string[] }) => {
+    writeCachedCapture(tmp, 'sha', 'key', appPath, { ...capture, image: png }, opts);
+    return readCachedCapture(tmp, 'sha', 'key', appPath, path.join(tmp, 'cache-out.png'));
+  };
+
+  it('keeps signed-in captures', () => {
+    expect(roundTrip('/kept', page(), signIn)?.path).toBe('/x');
+  });
+
+  it('does not keep captures that may be signed out when a login hook is set', () => {
+    expect(roundTrip('/redirected', page({ finalPath: '/login' }), signIn)).toBeNull();
+    expect(roundTrip('/form', page({ signInForm: true }), signIn)).toBeNull();
+    expect(roundTrip('/custom', page({ finalPath: '/welcome' }), { login: true, signInPaths: ['/welcome'] })).toBeNull();
+  });
+
+  it('keeps them without a login hook', () => {
+    expect(roundTrip('/no-login', page({ finalPath: '/login' }))?.finalPath).toBe('/login');
+  });
+});
+
+describe('readConfig', () => {
+  const withConfig = (config: object) => {
+    const dir = fs.mkdtempSync(path.join(tmp, 'config-'));
+    fs.writeFileSync(path.join(dir, 'redline.config.json'), JSON.stringify(config));
+    return dir;
+  };
+
+  it('reads a list of sign-in paths', () => {
+    expect(readConfig(withConfig({ signInPaths: ['/signin', '/sso/start'] })).signInPaths).toEqual(['/signin', '/sso/start']);
+  });
+
+  it('rejects sign-in paths that are not a list of app paths', () => {
+    expect(() => readConfig(withConfig({ signInPaths: '/signin' }))).toThrow(/"signInPaths" must be a list/);
+    expect(() => readConfig(withConfig({ signInPaths: ['signin'] }))).toThrow(/"signInPaths" must be a list/);
+    expect(() => readConfig(withConfig({ signInPaths: [42] }))).toThrow(/"signInPaths" must be a list/);
   });
 });
