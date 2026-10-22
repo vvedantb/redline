@@ -592,8 +592,8 @@ export async function compare(options: CompareOptions = {}): Promise<CompareResu
     // Seeds that sign out load after every other page, so they cannot sign those out.
     const { routes, last: signOutSeeds } = signOutLast(capped.routes, signOutPaths);
     const firstCount = routes.length - signOutSeeds.length;
-    const signedOut = [...before.skipped, ...after.skipped].filter((s) => s.reason === SIGN_OUT_SKIPPED && !exclude.has(s.route));
-    const skipped = [...capped.skipped, ...new Map(signedOut.map((s) => [s.route, s])).values()];
+    const signOutSkipped = [...before.skipped, ...after.skipped].filter((s) => s.reason === SIGN_OUT_SKIPPED && !exclude.has(s.route));
+    const skipped = [...capped.skipped, ...new Map(signOutSkipped.map((s) => [s.route, s])).values()];
 
     clearOut(outDir);
     const images = path.join(outDir, 'images');
