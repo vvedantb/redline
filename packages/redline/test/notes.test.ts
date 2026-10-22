@@ -7,11 +7,11 @@ import { attachNotes, parsePrNotes, PrBodySource, readNotesFile, type Note } fro
 import { computeDiff, pinBaseline } from '../src/server';
 import type { DiffFile, DiffHunk } from '../src/types';
 
-const BODY = `Makes the export button stand out.
+const BODY = `Makes the save button stand out.
 
 ## Redline notes
 
-- app/(commissioner)/domcare/list/ExportButton.tsx: The export button is now red and larger.
+- src/components/SaveButton.tsx: The save button is now green and larger.
 - \`components/Table.tsx:12-20\`: Rows are taller, so more of the name shows.
 * components/Table.tsx: Small clean-ups.
   The table looks the same otherwise.
@@ -24,7 +24,7 @@ const BODY = `Makes the export button stand out.
 describe('parsePrNotes', () => {
   it('reads the bullets under "## Redline notes" until the next heading', () => {
     expect(parsePrNotes(BODY)).toEqual([
-      { path: 'app/(commissioner)/domcare/list/ExportButton.tsx', text: 'The export button is now red and larger.', source: 'pr' },
+      { path: 'src/components/SaveButton.tsx', text: 'The save button is now green and larger.', source: 'pr' },
       { path: 'components/Table.tsx', startLine: 12, endLine: 20, text: 'Rows are taller, so more of the name shows.', source: 'pr' },
       { path: 'components/Table.tsx', text: 'Small clean-ups. The table looks the same otherwise.', source: 'pr' },
     ]);
@@ -35,6 +35,21 @@ describe('parsePrNotes', () => {
     expect(parsePrNotes('### redline notes\r\n- a.tsx:7: One line.\r\n')).toEqual([
       { path: 'a.tsx', startLine: 7, endLine: 7, text: 'One line.', source: 'pr' },
     ]);
+  });
+
+  it('reads a backtick path with the range outside the backticks', () => {
+    expect(parsePrNotes('## Redline notes\n- `src/a.tsx`:12-20: Outside.\n- `src/b.tsx`:4: One line.\n- src/c.tsx:1-2: Bare.\n')).toEqual([
+      { path: 'src/a.tsx', startLine: 12, endLine: 20, text: 'Outside.', source: 'pr' },
+      { path: 'src/b.tsx', startLine: 4, endLine: 4, text: 'One line.', source: 'pr' },
+      { path: 'src/c.tsx', startLine: 1, endLine: 2, text: 'Bare.', source: 'pr' },
+    ]);
+  });
+
+  it('ignores a "## Redline notes" heading and bullets inside fenced code blocks', () => {
+    const quoted = ['Docs example:', '', '```md', '## Redline notes', '', '- src/example.tsx: Example only.', '```', '', '~~~', '## Redline notes', '- src/tilde.tsx: Also an example.', '~~~', ''].join('\n');
+    expect(parsePrNotes(quoted)).toEqual([]);
+    const real = `${quoted}## Redline notes\n\n\`\`\`\n## Not a heading\n- src/fenced.tsx: Skipped.\n\`\`\`\n- src/real.tsx: Kept.\n`;
+    expect(parsePrNotes(real)).toEqual([{ path: 'src/real.tsx', text: 'Kept.', source: 'pr' }]);
   });
 });
 
@@ -92,11 +107,14 @@ describe('attachNotes', () => {
     expect(notesOf(attachNotes([file('src/Other.tsx', hunk(1, 2))], pr, 'apps/web/'))).toEqual([[null]]);
   });
 
-  it('prefers redline.notes.json over the PR description, hunk by hunk', () => {
-    const fromFile: Note[] = [{ path: 'src/Table.tsx', startLine: 40, endLine: 41, text: 'Committed note.', source: 'file' }];
-    const files = [file('src/Table.tsx', hunk(18, 22), hunk(40, 44))];
-    // The file covers only the second hunk, so the first keeps its PR note.
-    expect(notesOf(attachNotes(files, [...fromFile, ...pr], ''))).toEqual([['pr: Taller rows.', 'file: Committed note.']]);
+  it('prefers the PR description over redline.notes.json, hunk by hunk', () => {
+    const fromFile: Note[] = [
+      { path: 'src/Table.tsx', text: 'Stale whole-file note.', source: 'file' },
+      { path: 'src/Other.tsx', startLine: 1, endLine: 9, text: 'Committed note.', source: 'file' },
+    ];
+    const files = [file('src/Table.tsx', hunk(18, 22), hunk(40, 44)), file('src/Other.tsx', hunk(2, 3))];
+    // The PR covers every Table hunk (ranged or whole-file), so the file only fills in where the PR has nothing.
+    expect(notesOf(attachNotes(files, [...fromFile, ...pr], ''))).toEqual([['pr: Taller rows.', 'pr: Table tidy-up.'], ['file: Committed note.']]);
   });
 });
 
@@ -157,7 +175,7 @@ describe('computeDiff with notes', () => {
     expect(asked).toBe(1);
 
     fs.writeFileSync(path.join(root, 'redline.notes.json'), JSON.stringify({ 'src/Hero.tsx:1': 'From the committed file.' }));
-    expect(computeDiff({ root, prBody }).files[0].hunks[0]).toMatchObject({ note: 'From the committed file.', noteSource: 'file' });
-    expect(computeDiff({ root, prBody: false }).files[0].hunks[0].note).toBe('From the committed file.');
+    expect(computeDiff({ root, prBody }).files[0].hunks[0]).toMatchObject({ note: 'The headline is new.', noteSource: 'pr' });
+    expect(computeDiff({ root, prBody: false }).files[0].hunks[0]).toMatchObject({ note: 'From the committed file.', noteSource: 'file' });
   });
 });

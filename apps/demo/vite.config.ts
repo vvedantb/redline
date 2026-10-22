@@ -23,7 +23,8 @@ function demoApi(): Plugin {
 
 export default defineConfig({
   plugins: [
-    redline({ history: { networkFixtures: fileURLToPath(new URL('./network-fixtures.json', import.meta.url)) } }),
+    // prNotes off: e2e must not depend on whether `gh` is installed and signed in.
+    redline({ prNotes: false, history: { networkFixtures: fileURLToPath(new URL('./network-fixtures.json', import.meta.url)) } }),
     react(),
     demoApi(),
   ],

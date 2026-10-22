@@ -5,8 +5,9 @@ import type { DiffFile } from './types';
 
 /**
  * Plain-English notes for changed code, written by whoever made the change (usually the agent).
- * Two sources: the `## Redline notes` section of the PR description, and a committed
- * `redline.notes.json`. The file wins. Redline never writes notes itself.
+ * Two sources: the `## Redline notes` section of the PR description, and a
+ * `redline.notes.json` in the app root. The PR wins, because a committed file can outlive the
+ * change it describes. Redline never writes notes itself.
  */
 
 export const NOTES_FILE = 'redline.notes.json';
@@ -21,9 +22,9 @@ export interface Note {
   source: 'file' | 'pr';
 }
 
-/** `path`, `path:12` or `path:12-20`, as written in a note key. */
+/** `path`, `path:12` or `path:12-20`, as written in a note key. Backticks are dropped, so `` `path`:12 `` works too. */
 function parseKey(key: string): Pick<Note, 'path' | 'startLine' | 'endLine'> | null {
-  const m = /^(.+?)(?::(\d+)(?:-(\d+))?)?$/.exec(key.trim().replace(/^`|`$/g, ''));
+  const m = /^(.+?)(?::(\d+)(?:-(\d+))?)?$/.exec(key.trim().replace(/`/g, ''));
   if (!m || !m[1]) return null;
   if (!m[2]) return { path: m[1] };
   const startLine = Number(m[2]);
@@ -33,19 +34,32 @@ function parseKey(key: string): Pick<Note, 'path' | 'startLine' | 'endLine'> | n
 const HEADING = /^#{1,6}\s/;
 const SECTION = /^#{2,3}\s+redline notes\s*#*\s*$/i;
 const BULLET = /^\s*[-*]\s+(.*)$/;
-/** Key, then `: ` and the note. The key ends at the first colon that a space follows. */
-const ENTRY = /^(`[^`]+`|[^\s`][^`]*?):\s+(.+)$/;
+/** Opening or closing code fence. Headings and bullets inside a fence are not read. */
+const FENCE = /^\s{0,3}(`{3,}|~{3,})/;
+/** Key, then `: ` and the note. The key ends at the first colon that a space follows. A backtick path may have its range outside. */
+const ENTRY = /^(`[^`]+`(?::\d+(?:-\d+)?)?|[^\s`][^`]*?):\s+(.+)$/;
 
 /**
  * Notes from a PR description: each bullet under a `## Redline notes` heading, until the next
  * heading. `- path[:start-end]: note`. Indented lines under a bullet continue its note.
+ * Fenced code blocks are skipped, so a quoted example is not read as notes.
  */
 export function parsePrNotes(body: string): Note[] {
-  const lines = body.replace(/\r\n/g, '\n').split('\n');
-  const start = lines.findIndex((l) => SECTION.test(l.trim()));
-  if (start < 0) return [];
   const notes: Note[] = [];
-  for (const line of lines.slice(start + 1)) {
+  let fence: string | null = null;
+  let inSection = false;
+  for (const line of body.replace(/\r\n/g, '\n').split('\n')) {
+    const marker = FENCE.exec(line)?.[1];
+    if (marker) {
+      if (!fence) fence = marker;
+      else if (marker[0] === fence[0] && marker.length >= fence.length) fence = null;
+      continue;
+    }
+    if (fence) continue;
+    if (!inSection) {
+      inSection = SECTION.test(line.trim());
+      continue;
+    }
     if (HEADING.test(line)) break;
     const bullet = BULLET.exec(line);
     if (bullet) {
@@ -87,8 +101,8 @@ const overlaps = (note: Note, start: number, end: number) => note.startLine !== 
 
 /**
  * Copy `files` with `note` and `noteSource` on each hunk that has one. `prefix` is the app's path
- * from the repository top (`apps/web/`), so notes may use either form. Per hunk, the file source
- * wins over the PR. Within a source, every ranged note the hunk overlaps is used, else the
+ * from the repository top (`apps/web/`), so notes may use either form. Per hunk, the PR wins
+ * over the file source. Within a source, every ranged note the hunk overlaps is used, else the
  * whole-file note.
  */
 export function attachNotes(files: DiffFile[], notes: Note[], prefix: string): DiffFile[] {
@@ -99,7 +113,7 @@ export function attachNotes(files: DiffFile[], notes: Note[], prefix: string): D
     return {
       ...f,
       hunks: f.hunks.map((h) => {
-        for (const source of ['file', 'pr'] as const) {
+        for (const source of ['pr', 'file'] as const) {
           const own = mine.filter((n) => n.source === source);
           const ranged = own.filter((n) => overlaps(n, h.startLine, h.endLine));
           const picked = ranged.length ? ranged : own.filter((n) => n.startLine === undefined).slice(0, 1);

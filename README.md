@@ -575,25 +575,27 @@ A hunk with no note keeps the code view. Notes arrive with the diff: in `GET /__
 
 Notes come from two places. Both use the same key: a path, with an optional line range (`path`, `path:12` or `path:12-20`).
 
-1. **`redline.notes.json`**, committed in the app root. It wins over the PR description.
+1. **The PR description**, in a section headed `## Redline notes`. Prefer this for PR reviews: it belongs to one PR, so it cannot go stale. It wins over `redline.notes.json`.
 
-   ```json
-   {
-     "app/(commissioner)/domcare/list/ExportButton.tsx": "The export button is now red and larger.",
-     "components/Table.tsx:12-20": "Rows are taller, so more of each name shows."
-   }
-   ```
-
-2. **The PR description**, in a section headed `## Redline notes`. The dev server reads the current branch's PR with `gh pr view --json body` and keeps it for a minute. The lookup runs in the background, so a note can take one poll (2 s) to show. If `gh` is missing, not signed in or finds no PR, this source is skipped without an error. Turn it off with `prNotes: false` in `redline()`, `withRedline()` or `createRedlineHandler()`.
+   The dev server reads the current branch's PR with `gh pr view --json body` and keeps it for a minute. While the tree has changes, it runs `gh pr view` in the background about once a minute, using the developer's `gh` login. A note can take one poll (2 s) to show. If `gh` is missing, not signed in or finds no PR, this source is skipped without an error. Turn it off with `prNotes: false` in `redline()`, `withRedline()` or `createRedlineHandler()`.
 
    ```md
    ## Redline notes
 
-   - app/(commissioner)/domcare/list/ExportButton.tsx: The export button is now red and larger.
+   - src/components/SaveButton.tsx: The save button is now green and larger.
    - components/Table.tsx:12-20: Rows are taller, so more of each name shows.
    ```
 
-   One bullet (`-` or `*`) per note: the key, a colon and a space, then the note. The path can be in backticks. An indented line under a bullet continues its note. The section ends at the next heading.
+   One bullet (`-` or `*`) per note: the key, a colon and a space, then the note. The path can be in backticks, with the range inside or outside them (`` `path:12-20` `` or `` `path`:12-20 ``). An indented line under a bullet continues its note. The section ends at the next heading. Headings and bullets inside fenced code blocks are ignored.
+
+2. **`redline.notes.json`** in the app root. It describes the current change only, because it is matched whatever the branch or baseline. Clear or update it when the change merges, or keep it out of `main`. Otherwise a whole-file note shows on every later change to that file.
+
+   ```json
+   {
+     "src/components/SaveButton.tsx": "The save button is now green and larger.",
+     "components/Table.tsx:12-20": "Rows are taller, so more of each name shows."
+   }
+   ```
 
 Matching:
 
@@ -601,7 +603,7 @@ Matching:
 - Line ranges use line numbers in the changed (new) file.
 - A note with a line range applies to every hunk that overlaps it. A hunk that overlaps several gets all of them.
 - A note without a range applies to every hunk in the file that no ranged note covers.
-- For each hunk, a note from `redline.notes.json` wins over one from the PR.
+- For each hunk, a note from the PR wins over one from `redline.notes.json`.
 
 To get notes from your coding agent, add something like this to its instructions (`AGENTS.md`, `CLAUDE.md` or similar):
 
