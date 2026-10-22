@@ -1,5 +1,5 @@
 import { ENDPOINT } from '../paths';
-import type { BaselineMode, LogResponse } from '../types';
+import type { BaselineMode, LogResponse, PagesResponse } from '../types';
 
 export const DEFAULT_ENDPOINT = ENDPOINT;
 export const LOCAL_BASELINE_KEY = 'redline:baseline';
@@ -118,6 +118,19 @@ export async function clearBaseline(options: EndpointOptions = {}): Promise<Base
     refreshRedline();
     return { enabled: true, headSha: null, baseline: null, source: 'local' };
   }
+}
+
+/** Pages the changed files reach, vs the pinned baseline or `baseline`. Read-only. */
+export async function getPages(options: EndpointOptions & { baseline?: string | null; fresh?: boolean } = {}): Promise<PagesResponse> {
+  const endpoint = options.endpoint ?? DEFAULT_ENDPOINT;
+  const query = new URLSearchParams();
+  if (options.baseline) query.set('baseline', options.baseline);
+  if (options.fresh) query.set('fresh', '1');
+  const qs = query.toString();
+  const res = await fetch(`${endpoint}/pages${qs ? `?${qs}` : ''}`, { cache: 'no-store' });
+  const json = (await res.json()) as PagesResponse;
+  if (!res.ok) throw new Error(json.error ?? `Redline pages failed (${res.status})`);
+  return json;
 }
 
 /** Recent commits, newest first. Read-only: the server runs `git log`. */

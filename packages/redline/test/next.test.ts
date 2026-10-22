@@ -52,7 +52,7 @@ describe('withRedline', () => {
   it('adds a Turbopack rule that reuses the webpack loader', () => {
     const config = withRedline({}, { enabled: true });
     expect(config.turbopack!.rules[TURBOPACK_GLOB]).toEqual({
-      loaders: [{ loader: loaderPath, options: { root: process.cwd() } }],
+      loaders: [{ loader: loaderPath, options: { root: process.cwd(), tagComponents: true } }],
     });
     expect(config.experimental).toBeUndefined();
   });
@@ -77,7 +77,22 @@ describe('withRedline', () => {
 
   it('appends to a user rule for the same glob so Redline runs first', () => {
     const rules = mergeTurbopackRules({ [TURBOPACK_GLOB]: { loaders: ['other'] } }, '/app');
-    expect(rules[TURBOPACK_GLOB].loaders).toEqual(['other', { loader: loaderPath, options: { root: '/app' } }]);
+    expect(rules[TURBOPACK_GLOB].loaders).toEqual(['other', { loader: loaderPath, options: { root: '/app', tagComponents: true } }]);
+  });
+
+  it('passes tagComponents: false to both the Turbopack and webpack loaders', () => {
+    const config = withRedline({}, { enabled: true, tagComponents: false });
+    expect(config.turbopack!.rules[TURBOPACK_GLOB].loaders[0].options).toEqual({ root: process.cwd(), tagComponents: false });
+    const out = config.webpack!({ module: { rules: [] } }, { dev: true, dir: '/app' });
+    expect(out.module.rules[0].use[0].options).toEqual({ root: '/app', tagComponents: false });
+  });
+
+  it('passes skipComponentsFrom to both loaders', () => {
+    const config = withRedline({}, { enabled: true, skipComponentsFrom: ['ui-kit'] });
+    const options = { tagComponents: true, skipComponentsFrom: ['ui-kit'] };
+    expect(config.turbopack!.rules[TURBOPACK_GLOB].loaders[0].options).toEqual({ root: process.cwd(), ...options });
+    const out = config.webpack!({ module: { rules: [] } }, { dev: true, dir: '/app' });
+    expect(out.module.rules[0].use[0].options).toEqual({ root: '/app', ...options });
   });
 
   it('picks the Turbopack config key by Next version', () => {
@@ -131,6 +146,46 @@ describe('createRedlineHandler', () => {
     const diff = await (await GET(new Request('http://x/api/redline/diff'))).json();
     expect(diff.mode).toBe('content');
     expect(diff.files[0].path).toBe('a.tsx');
+  });
+});
+
+describe('createRedlineHandler appDir', () => {
+  // A monorepo with `root` at the top and the app in apps/web.
+  function monorepo(): string {
+    const top = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'redline-next-mono-')));
+    const git = (...args: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd: top, encoding: 'utf8' });
+    const write = (rel: string, text: string) => {
+      fs.mkdirSync(path.dirname(path.join(top, rel)), { recursive: true });
+      fs.writeFileSync(path.join(top, rel), text);
+    };
+    write('apps/web/package.json', JSON.stringify({ dependencies: { next: '16.0.0' } }));
+    write('apps/web/app/about/page.tsx', 'export default function About() { return <main>About</main>; }\n');
+    write('apps/web/app/blog/[slug]/page.tsx', 'export default function Post() { return <main>Post</main>; }\n');
+    write('apps/web/redline.config.json', JSON.stringify({ seeds: ['/blog/hello'] }));
+    git('init', '-q');
+    git('add', '.');
+    git('commit', '-q', '-m', 'init');
+    return top;
+  }
+
+  const changedPages = async (GET: (r: Request) => Promise<Response>, top: string) => {
+    fs.appendFileSync(path.join(top, 'apps/web/app/about/page.tsx'), '// edit\n');
+    fs.appendFileSync(path.join(top, 'apps/web/app/blog/[slug]/page.tsx'), '// edit\n');
+    return (await (await GET(new Request('http://x/api/redline/pages'))).json()).pages.map((p: { url: string | null }) => p.url);
+  };
+
+  it.each([
+    ['appDir with history off', { appDir: 'apps/web', history: false as const }],
+    ['history.appDir', { history: { appDir: 'apps/web', thumbnails: false } }],
+  ])('reads routes and redline.config.json from the app: %s', async (_name, extra) => {
+    const top = monorepo();
+    try {
+      const { GET, POST } = createRedlineHandler({ root: top, enabled: true, ...extra });
+      expect((await POST(new Request('http://x/api/redline/pin', { method: 'POST', body: '{}' }))).status).toBe(200);
+      expect(await changedPages(GET, top)).toEqual(['/about', '/blog/hello']);
+    } finally {
+      fs.rmSync(top, { recursive: true, force: true });
+    }
   });
 });
 

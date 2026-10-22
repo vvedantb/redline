@@ -31,7 +31,7 @@ Click a page for before and after side by side with numbered boxes on the change
 
 ## How `compare` works
 
-1. **Build both commits.** Each commit is built in its own git worktree with the same engine as the overlay's History builds: `vite build --base /__redline/h/<sha>/`, or `next build` with `output: 'standalone'` and a matching `basePath`. Your working tree is never touched. `node_modules` is linked from the main tree when the lockfile is unchanged; otherwise the worktree installs. Builds are cached by commit under `.redline/`. The built pages run with History's read-only network layer, so they cannot write to your APIs.
+1. **Build both commits.** Each commit is built in its own git worktree with the same engine as the overlay's History builds, but at the root: `vite build --base /`, or `next build` with `output: 'standalone'` and no `basePath`. Each build is served at the root of its own port on `127.0.0.1`, so code that fetches or redirects to root-absolute paths (`fetch('/api/x')`, a middleware redirect to `/mfa/`) works as in production. Your working tree is never touched. `node_modules` is linked from the main tree when the lockfile is unchanged; otherwise the worktree installs. Builds are cached by commit under `.redline/builds-root/`, apart from the overlay's History builds, so the first `compare` after upgrading from a version that built under `/__redline/h/<sha>/` builds both commits again, and cached screenshots in `.redline/captures` are not reused. The built pages run with History's read-only network layer, so they cannot write to your APIs. Vite pages get it from the static server. Next.js pages get it from a small local proxy in front of the standalone server, which serves `/__redline/network/*` and adds the bootstrap to every HTML page; every other request is forwarded unchanged.
 2. **Find the pages.** File-system routes (Next.js `app/` and `pages/`; Vite `src/pages`, `src/routes` and React Router declarations), a crawl of same-origin links from `/`, `sitemap.xml`, and seeds from you. The crawl loads every page in the first two hops, then only the first page of each dynamic route for two more, up to 150 page loads. A dynamic route such as `/blog/[slug]` is captured only through a concrete URL, and keeps one example besides seeds. When a route has an example, its static sub-routes get one too: `/blog/hello` gives `/blog/hello/comments` for `/blog/[slug]/comments`. This covers tabs reached by buttons rather than links.
 3. **Capture.** Every page at both commits in headless Chromium, 4 at a time (`--concurrency`), set up to repeat: fixed clock, seeded `Math.random`, reduced motion, animations and transitions off, caret hidden, dev overlays hidden, UTC and `en-US`, service workers off, wait for network idle and fonts, scroll to trigger lazy content. Full-page screenshots, cut at 4000px.
 4. **Diff.** Pixel diff with [pixelmatch](https://github.com/mapbox/pixelmatch), after a light 3x3 blur of both screenshots so text drawn at a different sub-pixel offset does not count (`diffImages(a, b, { blur: false })` turns it off). Changed pixels are grouped into boxes; specks under 100 square pixels are dropped, and so is a box whose pixels only moved by up to 2px. Each changed page is then loaded once more at head: areas that also differ between those two loads are live data or timing, not the change, and are dropped. The report counts them and says how to `mask` them.
@@ -123,14 +123,17 @@ These fields let `compare` capture pages behind sign-in, against a local backend
   "envFile": ".env.redline",
   "network": "live",
   "blockConvexWrites": true,
-  "hooks": "redline.hooks.mjs"
+  "hooks": "redline.hooks.mjs",
+  "signInPaths": ["/signin/"]
 }
 ```
 
 - `envFile`: a dotenv file passed to both builds and to the Next.js server as is. The usual strip of secret and Convex keys does not apply to it, so put only what the build needs in it, such as a local backend URL and a publishable auth key. Vite inlines its `VITE_*` keys into the build. A build made with other values is built again. Keep this file and `.redline/` out of git.
 - `network`: `live` turns off the read-only network layer in captured pages, so sign-in requests and backend writes go through. Use it only with a seeded local backend. The default is `read-only`.
+- `signOutPaths`: extra sign-out paths that page discovery never loads, such as `["/end-session"]`. A path under one counts too, and case does not matter. It must be an array; entries that do not start with `/`, and `/` itself, are ignored with a notice. See below.
 - `blockConvexWrites`: drops the Convex mutation and action messages that captured pages send over their WebSocket, so a page that writes on load cannot change what the other commit sees. Queries still run. Each page reports how many writes were dropped.
-- `hooks`: a module with optional `login` and `routePath` exports. The older `auth` field (a module whose default export is `login`) still works.
+- `hooks`: a module with optional `login` and `routePath` exports. The older `auth` field (a module whose default export is `login`) still works. `login` gets a `baseUrl` at the root of the build's port, such as `http://127.0.0.1:4321`. Versions that built under `/__redline/h/<sha>/` passed that prefix in `baseUrl`; a hook that removed or added it by hand must stop doing so.
+- `signInPaths`: app paths of your sign-in screen, as a list of paths that start with `/`. Optional. Matched without regard to case. Any other value stops the run with a config error. See [Signed-out captures](#signed-out-captures).
 
 ```js
 // redline.hooks.mjs
@@ -138,7 +141,8 @@ These fields let `compare` capture pages behind sign-in, against a local backend
 // Signs the capture browser in. Runs once for each commit, before pages are found. Cookies and
 // storage it sets are kept for every capture. Secrets stay in Node and never reach the build.
 export async function login({ page, baseUrl, side }) {
-  // baseUrl is where this commit is served, e.g. http://127.0.0.1:4321/__redline/h/<sha>
+  // baseUrl is where this commit is served, at the root of its own port: e.g. http://127.0.0.1:4321,
+  // with no /__redline/h/<sha> prefix.
   await page.goto(`${baseUrl}/sign-in`);
   await page.fill('input[name=email]', process.env.TEST_USER_EMAIL);
   await page.fill('input[name=password]', process.env.TEST_USER_PASSWORD);
@@ -153,7 +157,24 @@ export function routePath(path) {
 }
 ```
 
+Page discovery never loads a sign-out route: one load would end the session for every page after it, and a server that ends the session on its side signs out every capture. By default it skips any path with a `logout`, `log-out`, `log_out`, `signout`, `sign-out` or `sign_out` segment, such as `/signout/` or `/api/auth/signout`, with or without a trailing slash. This applies to crawled links, file routes, `sitemap.xml` and derived examples. Each one shows in the report as skipped, with the reason "sign-out route, not loaded". Add your own with `signOutPaths`. Seeds are still loaded, because you asked for them, but after every other page at both commits, and the report says so.
+
+Known gap: in a production build, a Next.js `<Link>` to a sign-out route can still be prefetched while a page is captured, which may end the session. List the route in `signOutPaths` or `exclude`, mask the link with `mask` if it changes the page, and end the session from a `POST` action rather than a `GET` handler: only that stops the prefetch from signing out.
+
 Both commits are served from `127.0.0.1`, which shares cookies across ports, so `login` should return early when it finds a session. With `login` set, the fixed capture clock is the time the run starts instead of 1 January 2025: a clock in the past makes cookies set from script expire at once.
+
+#### Signed-out captures
+
+With a login hook, every capture at both commits should be signed in. If a capture shows the sign-in screen instead, it does not show the page, so Redline marks the page "Couldn't check" with a reason such as `Signed out at the base commit (ended on /signin/)`, not "Changed". The report also adds a notice with the count. A capture counts as signed out when:
+
+- it was redirected to a sign-in path: one of `signInPaths`, or a path under one. Without `signInPaths`, any path with a `login`, `log-in`, `log_in`, `signin`, `sign-in`, `sign_in`, `auth` or `sso` segment counts.
+- or, when `signInPaths` is not set, it showed a visible password field and the same page at the other commit did not. This covers apps that show the sign-in form in place, without a redirect. A password field at both commits, as on a change-password page, does not count. Nor does one where the other commit's page was blank or showed an error screen, as when a change fixes a broken page.
+
+Set `signInPaths` when your sign-in screen has its own path. Then only those paths count, which is the most exact check.
+
+A broken page at head is still reported as "Broken" (HTTP 500 or above, an error screen, a new JavaScript error, or a page that is now blank), even when the base capture was signed out. Captures that may be signed out are not kept in the screenshot cache, so the next run takes them again.
+
+A page you ask for directly, such as `/login` itself, is captured as usual. Without a login hook, only a head-side redirect to a sign-in path is checked, and the reason is `Needs sign-in`.
 
 ### Dev-server mode
 
@@ -188,11 +209,12 @@ const { routes: hit, removed, unplaced, limits } = affectedRoutes({
 ## Compare limits
 
 - Needs Playwright and Chromium (`npx playwright install chromium`), or `--chrome` pointing at an installed Chrome.
-- Pages behind sign-in are listed as "Couldn't check", unless you add a login hook (see [Signed-in pages](#signed-in-pages)).
+- Pages behind sign-in are listed as "Couldn't check", unless you add a login hook (see [Signed-in pages](#signed-in-pages)). With a login hook, a capture that ends signed out is "Couldn't check" too (see [Signed-out captures](#signed-out-captures)).
+- With a login hook and no `signInPaths`, a change that adds a password field to an existing page reads as signed out at head. Set `signInPaths` to check by path only.
 - Signed-in captures with `network: live` read and write the backend that `envFile` points at. Base is captured before head, so a page that writes on load can change what head sees. `blockConvexWrites` stops this for Convex; other APIs still receive writes.
 - Pages that load data at runtime see History's read-only network layer: reads are replayed from `.redline/network-fixtures.json` when a fixture matches, writes never leave the browser. Pages that depend on live data may differ between runs.
 - Both commits must build. A failed build stops the run and prints the end of its log.
-- Client-side routers must respect Vite's `base` (`import.meta.env.BASE_URL`).
+- Each build gets its own port, and both are on `127.0.0.1`, so cookies are shared between them (see [Signed-in pages](#signed-in-pages)).
 - No AI labels yet: the report says where pixels changed and which files likely caused it, not what the change means.
 
 ## In-app overlay (optional)
@@ -201,7 +223,10 @@ Redline also ships a dev-only overlay. You pin a baseline commit; after an agent
 
 ### How it works
 
-1. A transform adds `data-redline-source="src/Hero.tsx:4-9"` (file, start line, end line) to every JSX host element (`div`, `h1`, `button` and so on) in dev.
+1. A transform adds `data-redline-source="src/Hero.tsx:4-9"` (file, start line, end line) to every JSX element in dev: host elements (`div`, `h1`, `button` and so on) and component elements (`<ActionIcon>`, `<Tabs.Tab>`). Component libraries such as Mantine, MUI and Tabler pass `data-*` props through to the DOM, so the call site in your code is outlined. `Fragment`, `Suspense`, `StrictMode`, `Profiler`, `Activity`, `ViewTransition` and names that end in `Provider` or `Consumer` are not tagged, because they render no element of their own. Aliased React imports count too (`import { Fragment as F } from 'react'`).
+   - Components imported from `@headlessui/react`, `@react-three/fiber` or `@react-three/drei` are not tagged, in any import form (`<Menu.Button>`, `import * as Drei`). Headless UI throws on extra props when it renders a Fragment, and React Three Fiber reads `data-redline-source` as a nested property path. Add more packages with `skipComponentsFrom`.
+   - A local wrapper such as `const PrimaryButton = (p) => <Button {...p} />` passes its own tag last, so it overwrites the call-site tag: the DOM points at the wrapper file, not at the `<PrimaryButton>` call.
+   - `tagComponents: false` goes back to host-only tagging.
 2. The dev server serves `/__redline/*`. `GET /__redline/diff` runs `git diff <baseline>` over `tsx`, `jsx`, `ts`, `js` and `css` files, adds untracked files, and returns parsed hunks.
 3. `<RedlineOverlay />` fetches the diff, finds tagged elements, and maps each changed line to the innermost element whose source range contains it. It draws a fixed-position outline over each match.
 4. Each outline has a small label button. Click it to open a side panel with the file path, line and hunk text.
@@ -250,6 +275,8 @@ Plugin options:
 | `enabled` | `true` in `vite dev`, `false` in `vite build` | `false` turns off tagging and makes `/__redline/*` report `enabled: false`. `true` also tags production builds and serves the endpoints from `vite preview`. |
 | `baselineFile` | `<root>/.redline/baseline.json` | Where the pinned baseline is stored. |
 | `extensions` | `['tsx', 'jsx', 'ts', 'js', 'css']` | File types included in git diffs. |
+| `tagComponents` | `true` | Also tag component elements, not only host elements. Set `false` if your components fail or warn on an unknown `data-redline-source` prop. |
+| `skipComponentsFrom` | `[]` | Extra packages whose components are never tagged, added to the built-in list (`@headlessui/react`, `@react-three/fiber`, `@react-three/drei`). Subpaths match too. |
 | `history` | `{ maxBuilds: 5, thumbnails: true }` | History builds. `maxBuilds` is how many ready builds stay on disk. `thumbnails: false` skips Playwright screenshots. `networkFixtures` is the fixtures file for the [read-only network layer](#history-network-read-only) (default `.redline/network-fixtures.json`). `false` turns History builds off. |
 | `prNotes` | `true` | Read [change notes](#change-notes) from the current branch's PR with `gh`. `false` reads `redline.notes.json` only. |
 
@@ -294,6 +321,7 @@ If you are upgrading, rename `app/api/redline/[action]` to `app/api/redline/[...
 | Option | Default | What it does |
 | --- | --- | --- |
 | `root` | `process.cwd()` | Project root. `.redline/` lives here. Under `next dev` this is the app directory. |
+| `appDir` | `history.appDir`, else `root` | The Next.js app, relative to `root`. Changed pages reads its routes and `redline.config.json` here, and History builds it. Set it in a monorepo where `root` is the repository top level. It works with `history: false`. |
 | `history` | `{ maxBuilds: 5, thumbnails: true }` | History builds. `appDir` is the Next.js app relative to `root`, for a monorepo where `root` is the repository top level. `maxBuilds`, `thumbnails` and `networkFixtures` work as for Vite. `false` turns History builds off, and the build endpoints answer `501`. |
 
 Render the overlay from a client component:
@@ -307,7 +335,7 @@ export function DevTools() {
 }
 ```
 
-`withRedline(config, options)` accepts `enabled`, `apiRoute` (default `/api/redline`), `baselineFile` and `extensions`. When `NODE_ENV` is `production` and `enabled` is not `true`, it returns your config unchanged and the route handler reports `enabled: false`. `REDLINE=0` in the environment does the same, even with `enabled: true`. In dev it also sets `NEXT_PUBLIC_REDLINE=1`.
+`withRedline(config, options)` accepts `enabled`, `apiRoute` (default `/api/redline`), `baselineFile`, `extensions`, `tagComponents` (default `true`, as for Vite) and `skipComponentsFrom`. When `NODE_ENV` is `production` and `enabled` is not `true`, it returns your config unchanged and the route handler reports `enabled: false`. `REDLINE=0` in the environment does the same, even with `enabled: true`. In dev it also sets `NEXT_PUBLIC_REDLINE=1`.
 
 The Next.js integration is covered by unit tests. The E2E suite runs against the Vite demo.
 
@@ -354,6 +382,7 @@ These helpers also mirror the baseline to `localStorage` (`redline:baseline`). I
 | Endpoint | Returns |
 | --- | --- |
 | `GET /__redline/diff[?baseline=<ref>]` | Parsed hunks: working tree vs the pinned baseline, or vs `<ref>` when given. |
+| `GET /__redline/pages[?baseline=<ref>]` | The pages the changed files reach (see [Changed pages](#changed-pages)): `{ pages: [{ route, status, url, needsExample, confidence, reason, sources }], unplaced, cached }`. |
 | `GET /__redline/baseline` | `HEAD` SHA and the pinned baseline. |
 | `GET /__redline/log[?limit=<n>]` | Commits reachable from `HEAD`, newest first: `sha`, `shortSha`, `subject`, `author`, `date` (ISO 8601). Default limit 50, maximum 200. Uses `git log`. |
 | `GET /__redline/file?path=<path>[&ref=<ref>]` | `{ path, ref, content }` for a file at a commit (default `HEAD`). Uses `git show`. `path` is relative to the project root and must stay inside it. Only files with a configured extension can be read. |
@@ -368,7 +397,7 @@ These helpers also mirror the baseline to `localStorage` (`redline:baseline`). I
 
 Build endpoints work with Vite and Next.js. On Next.js they need the catch-all API route above. With `history: false` they answer `501`.
 
-From the browser, `getLog({ limit })` wraps `/__redline/log`.
+From the browser, `getLog({ limit })` wraps `/__redline/log` and `getPages({ baseline })` wraps `/__redline/pages`.
 
 ### Overlay
 
@@ -383,7 +412,7 @@ From the browser, `getLog({ limit })` wraps `/__redline/log`.
 />
 ```
 
-Outlines do not intercept clicks on your page. Only the small label button on each outline, the toolbar and open panels are clickable. Press Escape to close the diff panel, then the history panel.
+Outlines do not intercept clicks on your page. Only the small label button on each outline, the toolbar and open panels are clickable. Press Escape to close the diff panel, then the changed pages or history panel.
 
 #### Toolbar
 
@@ -391,9 +420,31 @@ A floating toolbar sits bottom-left by default. It shows how many regions change
 
 - a drag handle (⠿). Drag to move the toolbar. Double-click to put it back bottom-left.
 - **Hide outlines** / **Show outlines**. This hides the outlines but keeps the toolbar, so you can turn them back on.
+- **Changed pages (N)**, which opens the list of pages the change reaches. It shows once a baseline is pinned. While the list loads, or if it fails, it reads **Changed pages (…)** and the panel shows the status or error.
 - **History**, which opens the commit history panel.
 
 The position and outline visibility are saved in `localStorage` under `redline:toolbar`. This is separate from `redlineDisabled`: that flag, and the other flags below, remove the whole overlay, toolbar included.
+
+#### Changed pages
+
+Reviewers who open the dev or preview link do not need the PR diff to find what to look at. **Changed pages (N)** lists every page that the changed files reach:
+
+1. `GET /__redline/pages` takes the same changed and deleted files as `/__redline/diff` (vs the pinned baseline, or `?baseline=<ref>`). It runs them through the same import-graph trace as `compare`'s "Likely from" (`affectedRoutes`).
+2. Each page links to its URL, in the same tab. A static route links to itself. A dynamic route such as `/blog/[slug]` links to the first `seeds` entry in `redline.config.json` that matches it. With no matching seed it is listed without a link, with a note that it needs an example URL. Only seeds that are same-origin paths become links: a seed that starts with `//` or `/\`, or has a scheme such as `https:`, is skipped.
+3. Pages whose page file was deleted are listed as **Removed**, without a link.
+4. Routes or URLs in `exclude` are left out.
+5. Pages whose own file changed come first, then pages by import depth, then removed pages. Each row shows the confidence and the closest changed file. The page you are on is marked "this page".
+
+```json
+{
+  "seeds": ["/blog/hello"],
+  "exclude": ["/auth/callback"]
+}
+```
+
+The trace can take 0.2 to 0.5 s on a large app, so the result is cached by baseline, `HEAD`, the list of changed files and the config. The overlay asks again only when the list of changed files changes. Only file-level changes count: an edit that adds an import to a file that was already changed does not refresh the list until another file changes. **Refresh** in the panel skips the cache (`?fresh=1`). If answers arrive out of order, only the latest request is shown.
+
+Links do not include a Next.js `basePath` or a Vite `base`. In a monorepo where `createRedlineHandler({ root })` is the repository top, set `appDir` (or `history.appDir`) so routes and `redline.config.json` are read from the app.
 
 #### History builds
 
@@ -425,8 +476,9 @@ Disk layout (`.redline/` should be in `.gitignore`):
   builds/<sha>/meta.json     sha, shortSha, status, framework, queuedAt, startedAt, finishedAt, basePath, error
   builds/<sha>/build.log     output of every step
   builds/<sha>/dist/         the static build, served at /__redline/h/<sha>/
-  snapshots/<sha>/thumb.png  thumbnail, when Playwright is available
-  worktrees/<sha>/           only while a build runs
+  builds-root/<sha>/         compare builds, made at / and served at the root of their own port
+  snapshots/<sha>/thumb.png  thumbnail, when Playwright is available (snapshots-root/<sha>/ for compare)
+  worktrees/<sha>/           only while a build runs (worktrees-root/<sha>/ for compare)
 ```
 
 To try it:
@@ -518,7 +570,7 @@ The process environment for `vite build`, `next build` and the standalone server
 History pages also get a small, generic network layer. It is not tied to Convex or any other backend:
 
 1. Redline adds `<script src="/__redline/network/bootstrap.js"></script>` at the start of `<head>` in every History HTML page. It is a blocking script, so it runs before the app's module scripts. The dev server serves it (not the build), so every build gets the current version.
-2. On a page under `/__redline/h/`, the script sets `window.__redlineNetwork.mode` to `'replay'` and patches `fetch` and `XMLHttpRequest`:
+2. On a page under `/__redline/h/`, or a `compare` capture of a build (which sets `window.__redlineNetworkReplay`, because its pages are served at `/`), the script sets `window.__redlineNetwork.mode` to `'replay'` and patches `fetch` and `XMLHttpRequest`:
    - `GET` and `HEAD` requests that match a fixture get the canned response, with the header `X-Redline-Fixture: 1`. Requests with no fixture go to the network as usual, so static assets still load.
    - `POST`, `PUT`, `PATCH` and `DELETE` never reach the network. They get `200 {"ok":true,"readOnly":true}` with `X-Redline-Read-Only: 1`, and `window.__redlineNetwork.lastMutation` is set to `{ method, url, blocked: true }`.
 3. Fixtures come from `GET /__redline/network/fixtures`, which reads `history.networkFixtures` (default `.redline/network-fixtures.json`). A missing file means no fixtures.
@@ -561,8 +613,9 @@ Call `refreshRedline()` to make the overlay refetch straight away. It otherwise 
 - A changed or added line maps to the innermost tagged element whose source range contains it.
 - A pure deletion maps to the innermost element that contains the lines on both sides of it.
 - If an element is entirely new, its tagged children are folded into it, so it gets one outline.
-- Lines outside any JSX host element (imports, helpers, types) are ignored. CSS changes are returned by the diff endpoint but are not outlined, because CSS lines do not map to elements.
-- Only host elements are tagged. A change to a component's props at the call site maps to the nearest host element around the call.
+- Lines outside any tagged JSX element (imports, helpers, types) are ignored. CSS changes are returned by the diff endpoint but are not outlined, because CSS lines do not map to elements.
+- A change to a component's props at the call site maps to the DOM element that the component renders, if the component passes `data-*` props through. If it does not, or `tagComponents` is `false`, the change maps to the nearest tagged element around the call.
+- The attribute goes after every other attribute, so the innermost JSX wins. A component that spreads its props onto a `div` keeps the `div`'s own location.
 
 #### Change notes
 
@@ -650,7 +703,7 @@ The E2E suite tests the package on its own demo. It needs the Vite dev server, b
 - choosing a commit in the history panel builds it, shows it in an iframe without outlines or pinning, and **Latest** returns to the live app with outlines
 - in that iframe the network layer is in `replay` mode: the notes come from `apps/demo/network-fixtures.json`, **Add note** is answered read-only and never reaches the live API (by `fetch` or XHR), and `VITE_CONVEX_URL` was not inlined into the build
 
-`npm run test:compare` turns each app in `examples/compare/` (Next.js and Vite) into a throwaway two-commit repo under `.e2e/`: `base/`, then `base/` with `head/` copied over and the files in `deleted.txt` removed. It runs the CLI on `HEAD~1..HEAD` and checks every page's status and suspect file in `report.json`: a copy change and a component change show as Changed, a client component that throws as Looks broken, a deleted page as Removed, a new page as New, a sign-in redirect and an unlinked catch-all route as Couldn't check, and the rest as Unchanged. Open `.e2e/<app>/.redline/report/index.html` to see the report.
+`npm run test:compare` turns each app in `examples/compare/` (Next.js and Vite) into a throwaway two-commit repo under `.e2e/`: `base/`, then `base/` with `head/` copied over and the files in `deleted.txt` removed. It runs the CLI on `HEAD~1..HEAD` and checks every page's status and suspect file in `report.json`: a copy change, a component change and a page whose root-absolute `fetch` returns new data show as Changed, a client component that throws as Looks broken, a deleted page as Removed, a new page as New, a sign-in redirect and an unlinked catch-all route as Couldn't check, and the rest as Unchanged. Open `.e2e/<app>/.redline/report/index.html` to see the report.
 
 The suites are local only. It needs no auth, backend or credentials. The `VITE_CONVEX_URL` it sets on the dev server is a made-up URL (`e2e/env.ts`); nothing connects to it. CI runs the same commands on Node 22 (`.github/workflows/ci.yml`).
 
@@ -667,12 +720,12 @@ docs/              Convex local snapshots
 
 ## Overlay limits
 
-- Only JSX host elements are tagged. Elements created with `React.createElement` or rendered by third-party components in `node_modules` are not.
+- Only JSX in your own files is tagged. Elements created with `React.createElement` are not. An element rendered by a component in `node_modules` is outlined only when that component passes `data-*` props to it.
 - History builds need your dependencies to build that commit. In a monorepo where the app imports a workspace package that is built from source (like this repo's demo), linking `node_modules` uses the current build of that package, and a fresh install may fail if the package's build output is not committed.
 - History builds of client-side routers need the router to respect Vite's `base` (`import.meta.env.BASE_URL`).
 - Vite History builds inline your current public `VITE_*` values, not the ones at that commit. Env files are copied (filtered) from your working tree, not read from history. An env file committed at that commit is used as committed, without filtering.
 - The read-only network layer covers `fetch` and `XMLHttpRequest` only. WebSockets, `EventSource` and `navigator.sendBeacon` are not intercepted.
-- Next.js History builds override `basePath`, `assetPrefix`, `distDir` and the tracing root for the snapshot. Code that hard-codes root-relative URLs (for example `fetch('/api/x')`, not through `next/link` or the base path) calls the live dev server, not the snapshot, unless a fixture matches it. Writes are always blocked. `next build` must succeed at that commit, type checks and lint included.
+- Next.js History builds override `basePath`, `assetPrefix`, `distDir` and the tracing root for the snapshot. Code that hard-codes root-relative URLs (for example `fetch('/api/x')`, not through `next/link` or the base path) calls the live dev server, not the snapshot, unless a fixture matches it. The History preview must stay under `/__redline/h/<sha>/`, because the iframe has to load from the dev server's own origin. `redline compare` does not have this limit: it serves each build at the root of its own port. Writes are always blocked. `next build` must succeed at that commit, type checks and lint included.
 - Each Next.js preview is a separate Node process. It uses the memory that `next start` would. Lower `history.maxBuilds` if that is a problem.
 - The toolbar can be moved with a pointer only. There is no keyboard control for its position.
 - The endpoints run `git` commands and builds in the project root. They are meant for local dev servers and must not be exposed publicly.

@@ -2,6 +2,9 @@ import type { BrowserContext } from 'playwright-core';
 import { capturePage, launchBrowser, stableContext, type BrowserOptions } from '../compare/capture';
 import { mapPool } from '../compare/pool';
 import { isDynamicRoute, routeEntries, type Framework } from './affected';
+import { matchPattern } from './pattern';
+
+export { matchPattern };
 
 export type RouteOrigin = 'file' | 'link' | 'sitemap' | 'seed' | 'derived';
 
@@ -40,6 +43,8 @@ export interface DiscoverOptions {
   concurrency?: number;
   /** Stop the crawl once each of these route patterns has an example URL. */
   targets?: string[];
+  /** Sign-out paths never loaded, on top of the built-in ones (see `isSignOutPath`). Seeds are still loaded. */
+  signOutPaths?: string[];
 }
 
 export type RoutePath = (appPath: string) => string;
@@ -57,22 +62,6 @@ export const DEFAULT_MAX_ROUTES = 50;
 const CRAWL_DEPTH = 4;
 export const DEFAULT_CRAWL_BUDGET = 150;
 export const DEFAULT_CONCURRENCY = 4;
-
-function segmentRegex(seg: string): string {
-  let m: RegExpMatchArray | null;
-  if ((m = seg.match(/^\[\[\.\.\.[^\]]+\]\]$/))) return '(?:/.+)?';
-  if ((m = seg.match(/^\[\.\.\.[^\]]+\]$/))) return '/.+';
-  if (/^\[[^\]]+\]$/.test(seg) || /^:\w+\??$/.test(seg)) return '/[^/]+';
-  if (seg === '*') return '(?:/.*)?';
-  return '/' + seg.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-/** Does `appPath` match a route pattern such as `/blog/[slug]`, `/docs/[...slug]` or `/users/:id`? */
-export function matchPattern(pattern: string, appPath: string): boolean {
-  const segs = pattern.split('/').filter(Boolean);
-  const re = segs.length ? segs.map(segmentRegex).join('') : '/';
-  return new RegExp(`^${re}/?$`).test(appPath === '' ? '/' : appPath);
-}
 
 /** The pattern that best describes `appPath`: an exact static route first, then the most specific dynamic one. */
 export function patternFor(appPath: string, patterns: string[], routePath: RoutePath = same): string | null {
@@ -123,8 +112,51 @@ async function fetchSitemap(baseUrl: string): Promise<string[]> {
   }
 }
 
+/** A `logout`, `log-out`, `log_out`, `signout`, `sign-out` or `sign_out` path segment, as in `/auth/signout/`. */
+const SIGN_OUT = /(^|\/)(log[-_]?out|sign[-_]?out)(\/|$)/i;
+
+/** Why discovery dropped a sign-out route, in its `skipped` list. */
+export const SIGN_OUT_SKIPPED = 'sign-out route, not loaded';
+
+/**
+ * Whether loading `appPath` would end the session. The crawl never follows these links and
+ * discovery returns them as skipped: one load signs the capture browser out for every page after
+ * it, and a server that ends the session server-side signs out every context. `extra` paths match
+ * exactly or as a parent path, ignoring case.
+ */
+export function isSignOutPath(appPath: string, extra: string[] = []): boolean {
+  const p = normalize(appPath).toLowerCase();
+  return SIGN_OUT.test(p) || extra.map((e) => normalize(e).toLowerCase()).some((e) => e !== '/' && (p === e || p.startsWith(`${e}/`)));
+}
+
+/**
+ * Checks `signOutPaths` from `redline.config.json`, which is read without a schema. Throws unless
+ * it is an array. Keeps strings that start with `/`, other than `/` itself, which would drop every
+ * page; the rest come back as `ignored`.
+ */
+export function parseSignOutPaths(value: string[] | undefined): { paths: string[]; ignored: string[] } {
+  if (value === undefined) return { paths: [], ignored: [] };
+  if (!Array.isArray(value)) throw new Error(`signOutPaths must be an array of paths such as ["/end-session"], not ${JSON.stringify(value)}.`);
+  const paths: string[] = [];
+  const ignored: string[] = [];
+  for (const e of value) {
+    if (typeof e === 'string' && e.startsWith('/') && normalize(e) !== '/') paths.push(e);
+    else ignored.push(JSON.stringify(e));
+  }
+  return { paths, ignored };
+}
+
+/** `routes` with sign-out seeds moved to the end, so they load after every other page. */
+export function signOutLast<T extends { path: string }>(routes: T[], signOutPaths: string[] = []): { routes: T[]; last: T[] } {
+  const last = routes.filter((r) => isSignOutPath(r.path, signOutPaths));
+  return { routes: [...routes.filter((r) => !last.includes(r)), ...last], last };
+}
+
 interface CrawlOptions {
   targets?: string[];
+  signOutPaths: string[];
+  /** Collects the sign-out links the crawl did not follow. */
+  signedOut: Set<string>;
   patterns: string[];
   routePath: RoutePath;
   budget: number;
@@ -136,7 +168,7 @@ interface CrawlOptions {
  * only the first page of each dynamic route, so lists lead to one example of each detail page
  * without loading every row. Stops after `budget` page loads.
  */
-async function crawl(context: BrowserContext, baseUrl: string, { targets, patterns, routePath, budget, concurrency }: CrawlOptions): Promise<string[]> {
+async function crawl(context: BrowserContext, baseUrl: string, { targets, signOutPaths, signedOut, patterns, routePath, budget, concurrency }: CrawlOptions): Promise<string[]> {
   const prefix = baseUrl.replace(/\/$/, '');
   const found = new Set<string>(['/']);
   const followed = new Set<string>();
@@ -149,6 +181,10 @@ async function crawl(context: BrowserContext, baseUrl: string, { targets, patter
     const next: string[] = [];
     for (const link of pages.flatMap((page) => page.links)) {
       if (found.has(link)) continue;
+      if (isSignOutPath(link, signOutPaths)) {
+        signedOut.add(normalize(link));
+        continue;
+      }
       found.add(link);
       const pattern = patternFor(link, patterns, routePath);
       if (depth >= 1 && pattern && isDynamicRoute(pattern)) {
@@ -212,25 +248,35 @@ export async function discoverRoutes(options: DiscoverOptions): Promise<Discover
     (found.get(key) ?? found.set(key, new Set()).get(key)!).add(from);
   };
   const routePath = options.routePath ?? same;
+  const signOutPaths = options.signOutPaths ?? [];
+  const signedOut = new Set<string>();
+  /** Adds `p` unless it is a sign-out route, which is only ever loaded as a seed. */
+  const addUnlessSignOut = (p: string, from: RouteOrigin) => {
+    if (isSignOutPath(p, signOutPaths)) signedOut.add(normalize(p));
+    else add(p, from);
+  };
   for (const s of options.seeds ?? []) add(s, 'seed');
-  for (const p of patterns) if (!isDynamicRoute(p)) add(p, 'file');
+  for (const p of patterns) if (!isDynamicRoute(p)) addUnlessSignOut(p, 'file');
 
   if (options.baseUrl) {
-    for (const p of await fetchSitemap(options.baseUrl)) add(p, 'sitemap');
+    for (const p of await fetchSitemap(options.baseUrl)) addUnlessSignOut(p, 'sitemap');
     let context = options.context;
     const browser = context ? null : await launchBrowser(options.root, options.browser);
     try {
       context ??= await stableContext(browser!);
-      const crawlOptions = { targets: options.targets, patterns, routePath, budget: options.crawlBudget ?? DEFAULT_CRAWL_BUDGET, concurrency: options.concurrency ?? DEFAULT_CONCURRENCY };
+      const crawlOptions = { targets: options.targets, signOutPaths, signedOut, patterns, routePath, budget: options.crawlBudget ?? DEFAULT_CRAWL_BUDGET, concurrency: options.concurrency ?? DEFAULT_CONCURRENCY };
       for (const p of await crawl(context, options.baseUrl, crawlOptions)) add(p, 'link');
     } finally {
       await browser?.close();
     }
   }
 
-  for (const url of deriveExamples(found.keys(), patterns, routePath).values()) add(url, 'derived');
+  for (const url of deriveExamples(found.keys(), patterns, routePath).values()) addUnlessSignOut(url, 'derived');
   const all = [...found.entries()].map(([p, from]) => ({ path: p, pattern: patternFor(p, patterns, routePath), from: [...from].sort() as RouteOrigin[] }));
-  return { ...capRoutes(all, maxRoutes, patterns), patterns };
+  const { routes, skipped } = capRoutes(all, maxRoutes, patterns);
+  // A sign-out route that is also a seed is loaded, so it is not skipped.
+  for (const p of [...signedOut].sort()) if (!found.has(p)) skipped.push({ route: p, reason: SIGN_OUT_SKIPPED });
+  return { routes, skipped, patterns };
 }
 
 /**

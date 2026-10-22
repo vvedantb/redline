@@ -6,12 +6,18 @@ import { createTwoFilesPatch } from 'diff';
 import type { BuildManager } from './build';
 import { attachNotes, parsePrNotes, readNotesFile, sharedPrBody } from './notes';
 import { parseUnifiedDiff } from './diff';
+import { appFiles, cachedChangedPages, readPageConfig } from './pages';
 import { normalizePath } from './source';
-import type { CommitInfo, DiffFile, DiffResponse, StoredBaseline } from './types';
+import type { CommitInfo, DiffFile, DiffResponse, PagesResponse, StoredBaseline } from './types';
 
 export interface RedlineServerOptions {
   /** Project root. Tagged paths and diff paths are relative to it. */
   root: string;
+  /**
+   * The app directory (Vite root or Next.js app): route files and `redline.config.json` are read
+   * here. Default `root`. Differs only when `root` is the top of a monorepo.
+   */
+  appDir?: string;
   /** Where the pinned baseline is stored. Default `<root>/.redline/baseline.json`. */
   baselineFile?: string;
   /** File extensions included in git diffs. */
@@ -211,6 +217,20 @@ function rawDiff(opts: RedlineServerOptions, baselineOverride?: string | null): 
   return { enabled, mode: 'git', baselineSha: stored.sha, headSha, files: diffGit(opts.root, stored.sha, opts.extensions) };
 }
 
+/**
+ * Pages the diff reaches, for the overlay's "Changed pages" list: the same changed and deleted
+ * files as `computeDiff`, run through `affectedRoutes`, with `seeds` and `exclude` from the config.
+ */
+export function computePages(opts: RedlineServerOptions, baselineOverride?: string | null, fresh = false): PagesResponse {
+  const diff = computeDiff(opts, baselineOverride);
+  const { enabled, mode, baselineSha, headSha } = diff;
+  if (!enabled || mode === 'none') return { enabled, mode, baselineSha, headSha, pages: [], unplaced: [], cached: false };
+  const appDir = opts.appDir ?? opts.root;
+  const config = readPageConfig(appDir);
+  const result = cachedChangedPages({ appDir, baselineSha, headSha }, appFiles(diff.files, opts.root, appDir), config, fresh);
+  return { enabled, mode, baselineSha, headSha, ...result, ...(config.error ? { error: config.error } : {}) };
+}
+
 export const DEFAULT_LOG_LIMIT = 50;
 const MAX_LOG_LIMIT = 200;
 
@@ -288,7 +308,7 @@ function handleBuild(
 
 /**
  * Framework-agnostic request handler for `/__redline/<action>`.
- * Actions: `diff`, `baseline`, `log`, `file` (GET), `pin`, `clear` (POST),
+ * Actions: `diff`, `pages`, `baseline`, `log`, `file` (GET), `pin`, `clear` (POST),
  * `build` (GET, POST, DELETE) and `build/log` (GET).
  * `log` and `file` only read git history; nothing here checks out or resets the working tree.
  */
@@ -304,6 +324,8 @@ export function handleRedlineRequest(
     switch (action) {
       case 'diff':
         return { status: 200, body: computeDiff(opts, query.get('baseline')) };
+      case 'pages':
+        return { status: 200, body: computePages(opts, query.get('baseline'), query.get('fresh') === '1') };
       case 'baseline':
         return {
           status: 200,

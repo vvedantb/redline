@@ -88,6 +88,30 @@ test('outlines only changed regions and opens the hunk on click', async ({ page,
   await expect(panel).toBeHidden();
 });
 
+test('lists changed pages in a panel, marks the current one, and closes on Escape', async ({ page, request }) => {
+  await pinCommitA(request);
+  await page.goto('/?redline=1');
+
+  const button = page.getByRole('button', { name: 'Changed pages (1)' });
+  await expect(button).toBeVisible();
+  await button.click();
+  const panel = page.getByRole('dialog', { name: 'Redline changed pages' });
+  await expect(panel).toBeVisible();
+  const link = panel.getByRole('link', { name: /^\// });
+  await expect(link).toHaveAttribute('href', '/');
+  await expect(link).toHaveAttribute('aria-current', 'page');
+  await expect(panel).toContainText('src/components/Hero.tsx');
+
+  // Opening History replaces the pages panel: both use the left side.
+  await page.getByRole('button', { name: 'History' }).click();
+  await expect(panel).toBeHidden();
+  await button.click();
+  await expect(page.getByRole('dialog', { name: 'Redline history' })).toBeHidden();
+
+  await page.keyboard.press('Escape');
+  await expect(panel).toBeHidden();
+});
+
 test('re-pinning to the current content clears outlines', async ({ page, request }) => {
   await pinCommitA(request);
   await page.goto('/?redline=1');

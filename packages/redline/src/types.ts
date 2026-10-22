@@ -41,6 +41,36 @@ export interface DiffResponse {
   error?: string;
 }
 
+/** A page the changed files reach, from `GET /__redline/pages`. */
+export interface ChangedPage {
+  /** Route pattern, e.g. `/about` or `/blog/[slug]`. */
+  route: string;
+  /** `removed`: the page file was deleted and the route is gone. */
+  status: 'changed' | 'removed';
+  /** A URL to open: the route itself when static, else a matching `seeds` entry. Null for removed pages and dynamic routes without a seed. */
+  url: string | null;
+  /** A dynamic route with no `seeds` entry to link to. */
+  needsExample: boolean;
+  confidence: 'high' | 'medium' | 'low';
+  reason: string;
+  /** Changed or deleted files that lead here, closest first. `depth` is import hops; 0 is the page file. */
+  sources: { file: string; depth: number }[];
+}
+
+export interface PagesResponse {
+  enabled: boolean;
+  mode: BaselineMode;
+  baselineSha: string | null;
+  headSha: string | null;
+  /** Changed pages first, the most direct cause first, then removed pages. */
+  pages: ChangedPage[];
+  /** Changed files no page could be traced to. */
+  unplaced: string[];
+  /** The result came from the cache for this baseline, head and set of changed files. */
+  cached: boolean;
+  error?: string;
+}
+
 export interface StoredBaseline {
   mode: 'git' | 'content';
   /** Git SHA for git mode, `content:<hash>` for content mode. */
