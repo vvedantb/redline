@@ -2,11 +2,11 @@ import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { BuildManager, DEFAULT_MAX_READY } from './build';
-import { defaultFixturesFile, injectBootstrap, networkAsset } from './network/serve';
+import { defaultFixturesFile, networkAsset } from './network/serve';
 import { ENDPOINT } from './paths';
 import { handleRedlineRequest, DEFAULT_EXTENSIONS, type RedlineServerOptions } from './server';
-import { historyTarget, proxyRequest } from './standalone';
-import { TRANSFORM_FILE } from './transform';
+import { historyTarget, proxyPage } from './standalone';
+import { TRANSFORM_FILE, type TagOptions } from './transform';
 import type { RedlineHistoryOptions } from './types';
 
 export { HISTORY_ENV_ALLOWLIST, HISTORY_ENV_STRIP_KEYS, HISTORY_ENV_STRIP_VALUE, isHistoryEnvKeyAllowed } from './env';
@@ -18,6 +18,10 @@ export interface RedlineNextOptions {
   apiRoute?: string;
   baselineFile?: string;
   extensions?: string[];
+  /** Tag component elements (`<Button>`, `<Tabs.Tab>`) as well as host elements. Default `true`. */
+  tagComponents?: boolean;
+  /** Extra packages whose components are never tagged, on top of Headless UI and React Three Fiber/drei. */
+  skipComponentsFrom?: string[];
 }
 
 export interface RedlineNextHistoryOptions extends RedlineHistoryOptions {
@@ -61,6 +65,11 @@ function isEnabled(options: RedlineNextOptions): boolean {
 /** Absolute path to the webpack loader that adds `data-redline-source`. */
 export const loaderPath = path.join(__dirname, 'loader.cjs');
 
+/** The loader entry for a webpack or Turbopack rule. Options must stay JSON for Turbopack. */
+function loaderEntry(root: string, { tagComponents = true, skipComponentsFrom }: TagOptions) {
+  return { loader: loaderPath, options: { root, tagComponents, ...(skipComponentsFrom ? { skipComponentsFrom } : {}) } };
+}
+
 /** Turbopack glob for the files the loader tags. */
 export const TURBOPACK_GLOB = '**/*.{tsx,jsx}';
 
@@ -87,8 +96,8 @@ export function usesLegacyTurboKey(version: [number, number] | null): boolean {
  * If the user already has a rule for the same glob, the loader is appended to its
  * `loaders` so it runs first, on the original JSX.
  */
-export function mergeTurbopackRules(rules: AnyConfig | undefined, root: string): AnyConfig {
-  const loader = { loader: loaderPath, options: { root } };
+export function mergeTurbopackRules(rules: AnyConfig | undefined, root: string, tag: TagOptions = {}): AnyConfig {
+  const loader = loaderEntry(root, tag);
   const existing = rules?.[TURBOPACK_GLOB];
   if (existing === undefined) return { ...(rules ?? {}), [TURBOPACK_GLOB]: { loaders: [loader] } };
   if (existing && Array.isArray(existing.loaders)) {
@@ -101,7 +110,7 @@ export function mergeTurbopackRules(rules: AnyConfig | undefined, root: string):
 /**
  * Wrap a Next.js config.
  *
- * In dev it tags JSX host elements under both bundlers: a Turbopack rule (`turbopack.rules`
+ * In dev it tags JSX elements under both bundlers: a Turbopack rule (`turbopack.rules`
  * on Next 15.3+, `experimental.turbo.rules` before that) and a webpack pre-loader for
  * `next dev --webpack`. Both use the same loader. It also sets `NEXT_PUBLIC_REDLINE=1`
  * and rewrites `/__redline/:path*` to your API route, History previews included.
@@ -116,6 +125,7 @@ export function withRedline<T extends AnyConfig>(
   const userRewrites = nextConfig.rewrites as (() => Promise<Rewrites> | Rewrites) | undefined;
   const ours: Rewrite[] = [{ source: `${ENDPOINT}/:path*`, destination: `${apiRoute}/:path*` }];
   const root = process.cwd();
+  const tag: TagOptions = { tagComponents: options.tagComponents, skipComponentsFrom: options.skipComponentsFrom };
   // Follow the user's key if they already set one, otherwise pick by Next version.
   const legacy =
     nextConfig.turbopack === undefined &&
@@ -124,10 +134,13 @@ export function withRedline<T extends AnyConfig>(
     ? {
         experimental: {
           ...nextConfig.experimental,
-          turbo: { ...nextConfig.experimental?.turbo, rules: mergeTurbopackRules(nextConfig.experimental?.turbo?.rules, root) },
+          turbo: {
+            ...nextConfig.experimental?.turbo,
+            rules: mergeTurbopackRules(nextConfig.experimental?.turbo?.rules, root, tag),
+          },
         },
       }
-    : { turbopack: { ...nextConfig.turbopack, rules: mergeTurbopackRules(nextConfig.turbopack?.rules, root) } };
+    : { turbopack: { ...nextConfig.turbopack, rules: mergeTurbopackRules(nextConfig.turbopack?.rules, root, tag) } };
 
   return {
     ...nextConfig,
@@ -142,7 +155,7 @@ export function withRedline<T extends AnyConfig>(
           test: TRANSFORM_FILE,
           exclude: /node_modules/,
           enforce: 'pre',
-          use: [{ loader: loaderPath, options: { root: ctx?.dir ?? process.cwd() } }],
+          use: [loaderEntry(ctx?.dir ?? process.cwd(), tag)],
         });
       }
       return result;
@@ -214,10 +227,7 @@ async function serveHistory(opts: RedlineServerOptions, request: Request, action
     return plain(502, `The History server did not start: ${err instanceof Error ? err.message : String(err)}`);
   }
   if (!origin) return plain(404, 'No ready build for this commit');
-  const res = await proxyRequest(request, origin, target.path + new URL(request.url).search);
-  if (request.method !== 'GET' || !(res.headers.get('content-type') ?? '').includes('text/html')) return res;
-  // Buffer HTML pages to add the read-only network bootstrap. Other responses stream.
-  return new Response(injectBootstrap(await res.text()), { status: res.status, statusText: res.statusText, headers: res.headers });
+  return proxyPage(request, origin, target.path + new URL(request.url).search);
 }
 
 function serveThumbnail(opts: RedlineServerOptions, url: URL): Response {

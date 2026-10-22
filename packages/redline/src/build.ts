@@ -15,8 +15,11 @@ import {
   isNextApp,
   nextBin,
   nextBuildFlags,
+  proxyPage,
+  sendWebResponse,
   snapshotEnv,
   standaloneServerDir,
+  toWebRequest,
   writeSnapshotConfig,
   type SpawnServerFn,
 } from './standalone';
@@ -27,6 +30,7 @@ import type { BuildFramework, BuildJob, BuildMeta } from './types';
  *
  * A job adds a detached worktree under `.redline/worktrees/<sha>`, reuses or installs
  * dependencies, builds, then removes the worktree. Vite: `vite build --base /__redline/h/<sha>/`
+ * (`--base /` with `mount: 'root'`, into `.redline/builds-root/<sha>`)
  * into `.redline/builds/<sha>/dist`, served as static files. Next.js: `next build` with
  * `output: 'standalone'` into `.redline/builds/<sha>/standalone`, served by `node server.js`
  * on a localhost port, started on first view. The main working tree is never checked out,
@@ -71,6 +75,20 @@ export interface BuildManagerOptions {
    * values is built again. For compare runs against a local backend.
    */
   env?: Record<string, string>;
+  /** Where builds are mounted. See `BuildMount`. Default `history`. */
+  mount?: BuildMount;
+}
+
+/**
+ * `history`: built under `/__redline/h/<sha>/`, so the overlay's dev server can proxy every
+ * commit on one origin. `root`: built at `/` and served at the root of its own port, for
+ * `compare`. Apps that fetch or redirect to root-absolute paths (`fetch('/api/x')`) work only there.
+ */
+export type BuildMount = 'history' | 'root';
+
+/** Base path a build of `sha` is made with. Always ends in `/`. */
+export function buildBasePath(sha: string, mount: BuildMount = 'history'): string {
+  return mount === 'root' ? '/' : historyBasePath(sha);
 }
 
 export const DEFAULT_MAX_READY = 5;
@@ -89,19 +107,25 @@ export interface BuildPaths {
   thumbnail: string;
 }
 
+/** Directory of every build for one mount. Root builds live apart, so they never replace History ones. */
+function buildsDir(root: string, mount: BuildMount): string {
+  return path.join(root, '.redline', mount === 'root' ? 'builds-root' : 'builds');
+}
+
 /** Disk layout for one commit. `sha` must be a full SHA. */
-export function buildPaths(root: string, sha: string): BuildPaths {
+export function buildPaths(root: string, sha: string, mount: BuildMount = 'history'): BuildPaths {
   if (!isFullSha(sha)) throw new Error(`Expected a full commit SHA: ${sha}`);
   const base = path.join(root, '.redline');
-  const dir = path.join(base, 'builds', sha);
-  const snapshot = path.join(base, 'snapshots', sha);
+  const dir = path.join(buildsDir(root, mount), sha);
+  // Root builds keep their own snapshots, so removing one never deletes a History thumbnail.
+  const snapshot = path.join(base, mount === 'root' ? 'snapshots-root' : 'snapshots', sha);
   return {
     dir,
     dist: path.join(dir, 'dist'),
     standalone: path.join(dir, 'standalone'),
     meta: path.join(dir, 'meta.json'),
     log: path.join(dir, 'build.log'),
-    worktree: path.join(base, 'worktrees', sha),
+    worktree: path.join(base, mount === 'root' ? 'worktrees-root' : 'worktrees', sha),
     snapshot,
     thumbnail: path.join(snapshot, 'thumb.png'),
   };
@@ -206,7 +230,7 @@ export function sendHistoryFile(res: http.ServerResponse, file: string, method =
 }
 
 /** Read `meta.json`. Returns null when missing or malformed. */
-export function readMeta(file: string): BuildMeta | null {
+export function readMeta(file: string, mount: BuildMount = 'history'): BuildMeta | null {
   let data;
   try {
     data = JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -226,7 +250,7 @@ export function readMeta(file: string): BuildMeta | null {
     queuedAt: str(data.queuedAt) ?? str(data.startedAt) ?? new Date(0).toISOString(),
     startedAt: str(data.startedAt),
     finishedAt: str(data.finishedAt),
-    basePath: historyBasePath(data.sha),
+    basePath: buildBasePath(data.sha, mount),
     ...(typeof data.error === 'string' ? { error: data.error } : {}),
     ...(typeof data.envKey === 'string' ? { envKey: data.envKey } : {}),
   };
@@ -377,9 +401,17 @@ export class BuildManager {
     return this.options.framework ?? 'vite';
   }
 
+  get mount(): BuildMount {
+    return this.options.mount ?? 'history';
+  }
+
+  private basePath(sha: string): string {
+    return buildBasePath(sha, this.mount);
+  }
+
   /** Read existing builds from disk. Jobs cut short by a restart are marked failed. */
   private load(): void {
-    const dir = path.join(this.root, '.redline', 'builds');
+    const dir = buildsDir(this.root, this.mount);
     let names: string[] = [];
     try {
       names = fs.readdirSync(dir);
@@ -388,20 +420,20 @@ export class BuildManager {
     }
     for (const name of names) {
       if (!isFullSha(name)) continue;
-      const meta = readMeta(path.join(dir, name, 'meta.json'));
+      const meta = readMeta(path.join(dir, name, 'meta.json'), this.mount);
       if (!meta || meta.sha !== name) continue;
       if (meta.status === 'queued' || meta.status === 'building') {
         meta.status = 'failed';
         meta.error = 'Interrupted: the dev server stopped before the build finished.';
         meta.finishedAt = meta.finishedAt ?? new Date().toISOString();
-        writeMeta(buildPaths(this.root, name).meta, meta);
+        writeMeta(this.paths(name).meta, meta);
       }
       this.jobs.set(name, meta);
     }
   }
 
   private paths(sha: string): BuildPaths {
-    return buildPaths(this.root, sha);
+    return buildPaths(this.root, sha, this.mount);
   }
 
   private save(meta: BuildMeta): void {
@@ -462,7 +494,7 @@ export class BuildManager {
       queuedAt: new Date().toISOString(),
       startedAt: null,
       finishedAt: null,
-      basePath: historyBasePath(sha),
+      basePath: this.basePath(sha),
       envKey,
     };
     this.save(meta);
@@ -588,7 +620,7 @@ export class BuildManager {
       }
       if (alive()) {
         this.save({ ...building, status: 'ready', finishedAt: new Date().toISOString() });
-        log(`\n[redline] Ready at ${historyBasePath(sha)}\n`);
+        log(`\n[redline] Ready at ${this.basePath(sha)}\n`);
       }
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
@@ -652,7 +684,7 @@ export class BuildManager {
     const wtConfigDir = await this.addWorktree(sha, p, run, log);
     await this.installDependencies(p, run, log);
     this.copyLiveEnvFiles(p, wtConfigDir, log);
-    const args = [viteBin(wtConfigDir), 'build', '--base', historyBasePath(sha), '--outDir', p.dist, '--emptyOutDir'];
+    const args = [viteBin(wtConfigDir), 'build', '--base', this.basePath(sha), '--outDir', p.dist, '--emptyOutDir'];
     if (this.options.configFile) args.push('--config', path.join(p.worktree, path.relative(top, fs.realpathSync(this.options.configFile))));
     // REDLINE=0 turns off tagging and endpoints in the built app. Secret and Convex keys in the
     // shell would otherwise be inlined as `import.meta.env.VITE_*`.
@@ -661,7 +693,7 @@ export class BuildManager {
 
   /**
    * `next build` in the worktree with a wrapper config that forces `output: 'standalone'` and
-   * `basePath: /__redline/h/<sha>`, then move the standalone server, static assets and `public/`
+   * the mount's `basePath` (`/__redline/h/<sha>`, or none for `root`), then move the standalone server, static assets and `public/`
    * into `.redline/builds/<sha>/standalone`.
    */
   private async buildNext(sha: string, p: BuildPaths, run: Run, log: Log): Promise<void> {
@@ -672,8 +704,9 @@ export class BuildManager {
     }
     await this.installDependencies(p, run, log);
     this.copyLiveEnvFiles(p, wtApp, log);
-    writeSnapshotConfig(wtApp, { basePath: historyBasePath(sha).replace(/\/$/, ''), tracingRoot: top });
-    log(`\n[redline] Snapshot config: output 'standalone', basePath ${historyBasePath(sha).replace(/\/$/, '')}.\n`);
+    const basePath = this.basePath(sha).replace(/\/$/, '');
+    writeSnapshotConfig(wtApp, { basePath, tracingRoot: top });
+    log(`\n[redline] Snapshot config: output 'standalone', basePath ${basePath || "'' (root)"}.\n`);
     await run(process.execPath, [nextBin(wtApp), 'build', ...nextBuildFlags(wtApp)], wtApp, { ...snapshotEnv(process.env), ...this.options.env });
     assembleStandalone(wtApp, p.standalone, top);
   }
@@ -737,31 +770,56 @@ export class BuildManager {
     }
   }
 
-  /** Serve a ready build on localhost. `url` ends in the build's base path. */
+  /** Serve a ready build on localhost. `url` ends in the build's base path: `/` for a `root` mount. */
   async preview(sha: string): Promise<{ url: string; close: () => Promise<void> }> {
     if (this.jobs.get(sha)?.status !== 'ready') throw new Error(`Build ${sha.slice(0, 7)} is not ready`);
     return this.openPreview(sha, this.paths(sha));
   }
 
-  /** Serve a build on localhost for capture. Vite: a throwaway static server. Next.js: its standalone server. */
+  /**
+   * Serve a build on localhost for capture. Vite: a throwaway static server. Next.js: its
+   * standalone server, behind a throwaway proxy for a `root` mount (see `proxyRoot`).
+   */
   private async openPreview(sha: string, p: BuildPaths): Promise<{ url: string; close: () => Promise<void> }> {
-    const basePath = historyBasePath(sha);
+    const basePath = this.basePath(sha);
     if (this.framework === 'next') {
       const wasRunning = this.servers.has(sha);
       const origin = await this.startServer(sha);
-      return { url: origin + basePath, close: async () => (wasRunning ? undefined : this.servers.stop(sha)) };
+      const stop = async () => (wasRunning ? undefined : this.servers.stop(sha));
+      if (this.mount === 'history') return { url: origin + basePath, close: stop };
+      const proxy = await this.proxyRoot(origin);
+      return {
+        url: proxy.url,
+        close: async () => {
+          await proxy.close();
+          await stop();
+        },
+      };
     }
-    const server = http.createServer((req, res) => {
+    return listenLocal(basePath, (req, res) => {
       const pathname = new URL(req.url ?? '/', 'http://localhost').pathname;
       if (sendNetworkAsset(res, pathname, this.fixturesFile)) return;
       const file = pathname.startsWith(basePath) ? resolveStaticFile(p.dist, pathname.slice(basePath.length)) : null;
       if (file) sendHistoryFile(res, file);
       else res.writeHead(404).end();
     });
-    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-    const address = server.address();
-    const port = address && typeof address === 'object' ? address.port : 0;
-    return { url: `http://127.0.0.1:${port}${basePath}`, close: () => new Promise((resolve) => server.close(() => resolve())) };
+  }
+
+  /**
+   * A History build's pages get the read-only network layer from the dev server's proxy. A root
+   * build has no dev server in front, so this proxy serves `/__redline/network/*` and adds the
+   * bootstrap to HTML pages. Every other request goes to the standalone server unchanged.
+   */
+  private proxyRoot(origin: string): Promise<{ url: string; close: () => Promise<void> }> {
+    return listenLocal('/', async (req, res) => {
+      const url = new URL(req.url ?? '/', 'http://localhost');
+      if ((req.method === 'GET' || req.method === 'HEAD') && sendNetworkAsset(res, url.pathname, this.fixturesFile, req.method)) return;
+      try {
+        await sendWebResponse(res, await proxyPage(await toWebRequest(req), origin, url.pathname + url.search));
+      } catch {
+        res.destroy();
+      }
+    });
   }
 
   private async captureThumbnail(sha: string, p: BuildPaths, log: Log): Promise<void> {
@@ -796,6 +854,22 @@ export class BuildManager {
       .sort((a, b) => score(b) - score(a));
     for (const m of ready.slice(Math.max(max - 1, 0))) this.remove(m.sha);
   }
+}
+
+/** An HTTP server on a free localhost port. `url` is its origin plus `basePath`. */
+async function listenLocal(basePath: string, handler: http.RequestListener): Promise<{ url: string; close: () => Promise<void> }> {
+  const server = http.createServer(handler);
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  const port = address && typeof address === 'object' ? address.port : 0;
+  return {
+    url: `http://127.0.0.1:${port}${basePath}`,
+    close: () =>
+      new Promise((resolve) => {
+        server.close(() => resolve());
+        server.closeAllConnections();
+      }),
+  };
 }
 
 interface PageLike {
