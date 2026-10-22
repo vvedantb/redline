@@ -300,6 +300,7 @@ export function RedlineOverlay(props: RedlineOverlayProps) {
         const rect = r.el.getBoundingClientRect();
         if (rect.width === 0 && rect.height === 0) return null;
         const label = `${r.file.path}:${r.line}`;
+        const note = r.hunk.note;
         return (
           <div
             key={r.key}
@@ -322,7 +323,7 @@ export function RedlineOverlay(props: RedlineOverlayProps) {
               type="button"
               data-redline-hit=""
               aria-label={`Show diff for ${label}`}
-              title={label}
+              title={note ? `${note}\n\n${label}` : label}
               onClick={() => setSelected(r)}
               style={{
                 position: 'absolute',
@@ -391,14 +392,20 @@ export function RedlineOverlay(props: RedlineOverlayProps) {
         />
       )}
 
-      {selected && <HunkPanel region={selected} baselineSha={diff?.baselineSha ?? null} onClose={() => setSelected(null)} />}
+      {selected && <HunkPanel key={selected.key} region={selected} baselineSha={diff?.baselineSha ?? null} onClose={() => setSelected(null)} />}
     </div>,
     document.body,
   );
 }
 
+const NOTE_SOURCE = { file: 'From redline.notes.json', pr: 'From the PR description' };
+
+/** The hunk's note first, in plain text, with the code behind "Show code". Without a note: the code. */
 function HunkPanel({ region, baselineSha, onClose }: { region: Region; baselineSha: string | null; onClose: () => void }) {
   const lines = region.hunk.patch.split('\n');
+  const { note, noteSource } = region.hunk;
+  // Rendered with `key={region.key}`, so each hunk opens note-first.
+  const [showCode, setShowCode] = useState(false);
   return (
     <aside
       role="dialog"
@@ -434,8 +441,22 @@ function HunkPanel({ region, baselineSha, onClose }: { region: Region; baselineS
           Close
         </button>
       </header>
+      {note && (
+        <div style={{ padding: 12, borderBottom: '1px solid #e5e7eb' }}>
+          <p data-redline-note="" style={{ margin: 0, fontSize: 15, lineHeight: 1.5, whiteSpace: 'pre-line' }}>
+            {note}
+          </p>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
+            {noteSource && <span style={{ flex: 1, color: '#6b7280', fontSize: 12 }}>{NOTE_SOURCE[noteSource]}</span>}
+            <button type="button" aria-expanded={showCode} onClick={() => setShowCode(!showCode)} style={{ cursor: 'pointer' }}>
+              {showCode ? 'Hide code' : 'Show code'}
+            </button>
+          </div>
+        </div>
+      )}
       <pre
         data-redline-patch=""
+        hidden={!!note && !showCode}
         style={{ margin: 0, padding: 12, overflow: 'auto', flex: 1, font: '12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace' }}
       >
         {lines.map((l, i) => (

@@ -17,6 +17,9 @@ export interface DiffHunk {
   deletions: number[];
   /** Hunk text, starting with the `@@` header. */
   patch: string;
+  /** Plain-English note for this hunk, from `redline.notes.json` or the PR's `## Redline notes`. */
+  note?: string;
+  noteSource?: 'file' | 'pr';
 }
 
 export interface DiffFile {

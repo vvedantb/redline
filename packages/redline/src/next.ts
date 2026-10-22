@@ -16,6 +16,8 @@ export interface RedlineNextOptions {
   enabled?: boolean;
   /** Route that serves the handler from `createRedlineHandler`. Default `/api/redline`. */
   apiRoute?: string;
+  /** Read `## Redline notes` from the current branch's PR with `gh`. Default `true`. `redline.notes.json` is always read. */
+  prNotes?: boolean;
   baselineFile?: string;
   extensions?: string[];
   /** Tag component elements (`<Button>`, `<Tabs.Tab>`) as well as host elements. Default `true`. */
@@ -280,6 +282,7 @@ export function createRedlineHandler(options: RedlineHandlerOptions = {}) {
       extensions: options.extensions ?? DEFAULT_EXTENSIONS,
       enabled,
       builds: enabled && options.history !== false ? sharedBuilds(root, appDir, options.history ?? {}) : undefined,
+      prBody: options.prNotes === false ? false : undefined,
     };
   };
 

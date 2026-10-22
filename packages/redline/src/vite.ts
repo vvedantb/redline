@@ -27,6 +27,8 @@ export interface RedlineViteOptions {
   skipComponentsFrom?: string[];
   /** Per-commit production builds for the History panel. `false` turns them off. */
   history?: RedlineHistoryOptions | false;
+  /** Read `## Redline notes` from the current branch's PR with `gh`. Default `true`. `redline.notes.json` is always read. */
+  prNotes?: boolean;
 }
 
 /** Vite plugin: tags JSX with source locations and serves `/__redline/*` in dev. */
@@ -43,6 +45,7 @@ export function redline(options: RedlineViteOptions = {}): Plugin {
     extensions: options.extensions ?? DEFAULT_EXTENSIONS,
     enabled: active,
     builds,
+    prBody: options.prNotes === false ? false : undefined,
   });
 
   const setup = () => {

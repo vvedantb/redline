@@ -278,6 +278,7 @@ Plugin options:
 | `tagComponents` | `true` | Also tag component elements, not only host elements. Set `false` if your components fail or warn on an unknown `data-redline-source` prop. |
 | `skipComponentsFrom` | `[]` | Extra packages whose components are never tagged, added to the built-in list (`@headlessui/react`, `@react-three/fiber`, `@react-three/drei`). Subpaths match too. |
 | `history` | `{ maxBuilds: 5, thumbnails: true }` | History builds. `maxBuilds` is how many ready builds stay on disk. `thumbnails: false` skips Playwright screenshots. `networkFixtures` is the fixtures file for the [read-only network layer](#history-network-read-only) (default `.redline/network-fixtures.json`). `false` turns History builds off. |
+| `prNotes` | `true` | Read [change notes](#change-notes) from the current branch's PR with `gh`. `false` reads `redline.notes.json` only. |
 
 Set `REDLINE=0` in the environment to turn Redline off whatever `enabled` says. History builds use this.
 
@@ -615,6 +616,55 @@ Call `refreshRedline()` to make the overlay refetch straight away. It otherwise 
 - Lines outside any tagged JSX element (imports, helpers, types) are ignored. CSS changes are returned by the diff endpoint but are not outlined, because CSS lines do not map to elements.
 - A change to a component's props at the call site maps to the DOM element that the component renders, if the component passes `data-*` props through. If it does not, or `tagComponents` is `false`, the change maps to the nearest tagged element around the call.
 - The attribute goes after every other attribute, so the innermost JSX wins. A component that spreads its props onto a `div` keeps the `div`'s own location.
+
+#### Change notes
+
+The hunk panel can show a plain-English note before the code, for reviewers who do not read diffs. Redline does not write the notes, and it does not call an LLM. Whoever makes the change writes them, usually the coding agent. When a hunk has a note:
+
+- the panel shows the note first, with the code behind **Show code**;
+- the outline label shows the note on hover.
+
+A hunk with no note keeps the code view. Notes arrive with the diff: in `GET /__redline/diff`, a hunk with a note has `note` and `noteSource` (`file` or `pr`).
+
+Notes come from two places. Both use the same key: a path, with an optional line range (`path`, `path:12` or `path:12-20`).
+
+1. **The PR description**, in a section headed `## Redline notes`. Prefer this for PR reviews: it belongs to one PR, so it cannot go stale. It wins over `redline.notes.json`.
+
+   The dev server reads the current branch's PR with `gh pr view --json body` and keeps it for a minute. While the tree has changes, it runs `gh pr view` in the background about once a minute, using the developer's `gh` login. A note can take one poll (2 s) to show. If `gh` is missing, not signed in or finds no PR, this source is skipped without an error. Turn it off with `prNotes: false` in `redline()`, `withRedline()` or `createRedlineHandler()`.
+
+   ```md
+   ## Redline notes
+
+   - src/components/SaveButton.tsx: The save button is now green and larger.
+   - components/Table.tsx:12-20: Rows are taller, so more of each name shows.
+   ```
+
+   One bullet (`-` or `*`) per note: the key, a colon and a space, then the note. The path can be in backticks, with the range inside or outside them (`` `path:12-20` `` or `` `path`:12-20 ``). An indented line under a bullet continues its note. The section ends at the next heading. Headings and bullets inside fenced code blocks are ignored.
+
+2. **`redline.notes.json`** in the app root. It describes the current change only, because it is matched whatever the branch or baseline. Clear or update it when the change merges, or keep it out of `main`. Otherwise a whole-file note shows on every later change to that file.
+
+   ```json
+   {
+     "src/components/SaveButton.tsx": "The save button is now green and larger.",
+     "components/Table.tsx:12-20": "Rows are taller, so more of each name shows."
+   }
+   ```
+
+Matching:
+
+- Paths are relative to the app root, or to the repository top (`apps/web/app/...`). Both work.
+- Line ranges use line numbers in the changed (new) file.
+- A note with a line range applies to every hunk that overlaps it. A hunk that overlaps several gets all of them.
+- A note without a range applies to every hunk in the file that no ranged note covers.
+- For each hunk, a note from the PR wins over one from `redline.notes.json`.
+
+To get notes from your coding agent, add something like this to its instructions (`AGENTS.md`, `CLAUDE.md` or similar):
+
+```md
+In every PR description, add a "## Redline notes" section. Write one bullet per changed UI file:
+"- <path>[:<start>-<end>]: <what a user will see change, in one plain sentence>".
+Write for a business reviewer: what changed on screen, not how the code changed.
+```
 
 ## Run the demo
 
