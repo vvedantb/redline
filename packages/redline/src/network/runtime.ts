@@ -100,7 +100,7 @@ export function fixtureResponse(entry: NetworkFixtureEntry): { status: number; h
 /** Patch `fetch` and `XMLHttpRequest` in `win`. Replay in History pages, capture with `?redlineNetwork=capture`. */
 export function installRedlineNetwork(win: Window & typeof globalThis): void {
   if (win.__redlineNetwork) return;
-  const inHistory = win.location.pathname.includes('/__redline/h/');
+  const inHistory = win.location.pathname.includes('/__redline/h/') || win.__redlineNetworkReplay === true;
   const param = new URLSearchParams(win.location.search).get('redlineNetwork');
   const mode: NetworkMode = inHistory && !win.__redlineNetworkLive ? 'replay' : param === 'capture' ? 'capture' : 'passthrough';
   const base = win.location.href;
@@ -235,5 +235,7 @@ declare global {
     __redlineNetwork?: RedlineNetworkState;
     /** Set by `compare` with `network: 'live'`: History pages pass every request through. */
     __redlineNetworkLive?: boolean;
+    /** Set by `compare`: its builds are served at the root of their own port, so the path cannot say "History". */
+    __redlineNetworkReplay?: boolean;
   }
 }

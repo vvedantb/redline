@@ -31,7 +31,7 @@ Click a page for before and after side by side with numbered boxes on the change
 
 ## How `compare` works
 
-1. **Build both commits.** Each commit is built in its own git worktree with the same engine as the overlay's History builds: `vite build --base /__redline/h/<sha>/`, or `next build` with `output: 'standalone'` and a matching `basePath`. Your working tree is never touched. `node_modules` is linked from the main tree when the lockfile is unchanged; otherwise the worktree installs. Builds are cached by commit under `.redline/`. The built pages run with History's read-only network layer, so they cannot write to your APIs.
+1. **Build both commits.** Each commit is built in its own git worktree with the same engine as the overlay's History builds, but at the root: `vite build --base /`, or `next build` with `output: 'standalone'` and no `basePath`. Each build is served at the root of its own port on `127.0.0.1`, so code that fetches or redirects to root-absolute paths (`fetch('/api/x')`, a middleware redirect to `/mfa/`) works as in production. Your working tree is never touched. `node_modules` is linked from the main tree when the lockfile is unchanged; otherwise the worktree installs. Builds are cached by commit under `.redline/builds-root/`, apart from the overlay's History builds, so the first `compare` after upgrading from a version that built under `/__redline/h/<sha>/` builds both commits again, and cached screenshots in `.redline/captures` are not reused. The built pages run with History's read-only network layer, so they cannot write to your APIs. Vite pages get it from the static server. Next.js pages get it from a small local proxy in front of the standalone server, which serves `/__redline/network/*` and adds the bootstrap to every HTML page; every other request is forwarded unchanged.
 2. **Find the pages.** File-system routes (Next.js `app/` and `pages/`; Vite `src/pages`, `src/routes` and React Router declarations), a crawl of same-origin links from `/`, `sitemap.xml`, and seeds from you. The crawl loads every page in the first two hops, then only the first page of each dynamic route for two more, up to 150 page loads. A dynamic route such as `/blog/[slug]` is captured only through a concrete URL, and keeps one example besides seeds. When a route has an example, its static sub-routes get one too: `/blog/hello` gives `/blog/hello/comments` for `/blog/[slug]/comments`. This covers tabs reached by buttons rather than links.
 3. **Capture.** Every page at both commits in headless Chromium, 4 at a time (`--concurrency`), set up to repeat: fixed clock, seeded `Math.random`, reduced motion, animations and transitions off, caret hidden, dev overlays hidden, UTC and `en-US`, service workers off, wait for network idle and fonts, scroll to trigger lazy content. Full-page screenshots, cut at 4000px.
 4. **Diff.** Pixel diff with [pixelmatch](https://github.com/mapbox/pixelmatch), after a light 3x3 blur of both screenshots so text drawn at a different sub-pixel offset does not count (`diffImages(a, b, { blur: false })` turns it off). Changed pixels are grouped into boxes; specks under 100 square pixels are dropped, and so is a box whose pixels only moved by up to 2px. Each changed page is then loaded once more at head: areas that also differ between those two loads are live data or timing, not the change, and are dropped. The report counts them and says how to `mask` them.
@@ -132,7 +132,7 @@ These fields let `compare` capture pages behind sign-in, against a local backend
 - `network`: `live` turns off the read-only network layer in captured pages, so sign-in requests and backend writes go through. Use it only with a seeded local backend. The default is `read-only`.
 - `signOutPaths`: extra sign-out paths that page discovery never loads, such as `["/end-session"]`. A path under one counts too, and case does not matter. It must be an array; entries that do not start with `/`, and `/` itself, are ignored with a notice. See below.
 - `blockConvexWrites`: drops the Convex mutation and action messages that captured pages send over their WebSocket, so a page that writes on load cannot change what the other commit sees. Queries still run. Each page reports how many writes were dropped.
-- `hooks`: a module with optional `login` and `routePath` exports. The older `auth` field (a module whose default export is `login`) still works.
+- `hooks`: a module with optional `login` and `routePath` exports. The older `auth` field (a module whose default export is `login`) still works. `login` gets a `baseUrl` at the root of the build's port, such as `http://127.0.0.1:4321`. Versions that built under `/__redline/h/<sha>/` passed that prefix in `baseUrl`; a hook that removed or added it by hand must stop doing so.
 - `signInPaths`: app paths of your sign-in screen, as a list of paths that start with `/`. Optional. Matched without regard to case. Any other value stops the run with a config error. See [Signed-out captures](#signed-out-captures).
 
 ```js
@@ -141,7 +141,8 @@ These fields let `compare` capture pages behind sign-in, against a local backend
 // Signs the capture browser in. Runs once for each commit, before pages are found. Cookies and
 // storage it sets are kept for every capture. Secrets stay in Node and never reach the build.
 export async function login({ page, baseUrl, side }) {
-  // baseUrl is where this commit is served, e.g. http://127.0.0.1:4321/__redline/h/<sha>
+  // baseUrl is where this commit is served, at the root of its own port: e.g. http://127.0.0.1:4321,
+  // with no /__redline/h/<sha> prefix.
   await page.goto(`${baseUrl}/sign-in`);
   await page.fill('input[name=email]', process.env.TEST_USER_EMAIL);
   await page.fill('input[name=password]', process.env.TEST_USER_PASSWORD);
@@ -213,7 +214,7 @@ const { routes: hit, removed, unplaced, limits } = affectedRoutes({
 - Signed-in captures with `network: live` read and write the backend that `envFile` points at. Base is captured before head, so a page that writes on load can change what head sees. `blockConvexWrites` stops this for Convex; other APIs still receive writes.
 - Pages that load data at runtime see History's read-only network layer: reads are replayed from `.redline/network-fixtures.json` when a fixture matches, writes never leave the browser. Pages that depend on live data may differ between runs.
 - Both commits must build. A failed build stops the run and prints the end of its log.
-- Client-side routers must respect Vite's `base` (`import.meta.env.BASE_URL`).
+- Each build gets its own port, and both are on `127.0.0.1`, so cookies are shared between them (see [Signed-in pages](#signed-in-pages)).
 - No AI labels yet: the report says where pixels changed and which files likely caused it, not what the change means.
 
 ## In-app overlay (optional)
@@ -445,8 +446,9 @@ Disk layout (`.redline/` should be in `.gitignore`):
   builds/<sha>/meta.json     sha, shortSha, status, framework, queuedAt, startedAt, finishedAt, basePath, error
   builds/<sha>/build.log     output of every step
   builds/<sha>/dist/         the static build, served at /__redline/h/<sha>/
-  snapshots/<sha>/thumb.png  thumbnail, when Playwright is available
-  worktrees/<sha>/           only while a build runs
+  builds-root/<sha>/         compare builds, made at / and served at the root of their own port
+  snapshots/<sha>/thumb.png  thumbnail, when Playwright is available (snapshots-root/<sha>/ for compare)
+  worktrees/<sha>/           only while a build runs (worktrees-root/<sha>/ for compare)
 ```
 
 To try it:
@@ -538,7 +540,7 @@ The process environment for `vite build`, `next build` and the standalone server
 History pages also get a small, generic network layer. It is not tied to Convex or any other backend:
 
 1. Redline adds `<script src="/__redline/network/bootstrap.js"></script>` at the start of `<head>` in every History HTML page. It is a blocking script, so it runs before the app's module scripts. The dev server serves it (not the build), so every build gets the current version.
-2. On a page under `/__redline/h/`, the script sets `window.__redlineNetwork.mode` to `'replay'` and patches `fetch` and `XMLHttpRequest`:
+2. On a page under `/__redline/h/`, or a `compare` capture of a build (which sets `window.__redlineNetworkReplay`, because its pages are served at `/`), the script sets `window.__redlineNetwork.mode` to `'replay'` and patches `fetch` and `XMLHttpRequest`:
    - `GET` and `HEAD` requests that match a fixture get the canned response, with the header `X-Redline-Fixture: 1`. Requests with no fixture go to the network as usual, so static assets still load.
    - `POST`, `PUT`, `PATCH` and `DELETE` never reach the network. They get `200 {"ok":true,"readOnly":true}` with `X-Redline-Read-Only: 1`, and `window.__redlineNetwork.lastMutation` is set to `{ method, url, blocked: true }`.
 3. Fixtures come from `GET /__redline/network/fixtures`, which reads `history.networkFixtures` (default `.redline/network-fixtures.json`). A missing file means no fixtures.
@@ -621,7 +623,7 @@ The E2E suite tests the package on its own demo. It needs the Vite dev server, b
 - choosing a commit in the history panel builds it, shows it in an iframe without outlines or pinning, and **Latest** returns to the live app with outlines
 - in that iframe the network layer is in `replay` mode: the notes come from `apps/demo/network-fixtures.json`, **Add note** is answered read-only and never reaches the live API (by `fetch` or XHR), and `VITE_CONVEX_URL` was not inlined into the build
 
-`npm run test:compare` turns each app in `examples/compare/` (Next.js and Vite) into a throwaway two-commit repo under `.e2e/`: `base/`, then `base/` with `head/` copied over and the files in `deleted.txt` removed. It runs the CLI on `HEAD~1..HEAD` and checks every page's status and suspect file in `report.json`: a copy change and a component change show as Changed, a client component that throws as Looks broken, a deleted page as Removed, a new page as New, a sign-in redirect and an unlinked catch-all route as Couldn't check, and the rest as Unchanged. Open `.e2e/<app>/.redline/report/index.html` to see the report.
+`npm run test:compare` turns each app in `examples/compare/` (Next.js and Vite) into a throwaway two-commit repo under `.e2e/`: `base/`, then `base/` with `head/` copied over and the files in `deleted.txt` removed. It runs the CLI on `HEAD~1..HEAD` and checks every page's status and suspect file in `report.json`: a copy change, a component change and a page whose root-absolute `fetch` returns new data show as Changed, a client component that throws as Looks broken, a deleted page as Removed, a new page as New, a sign-in redirect and an unlinked catch-all route as Couldn't check, and the rest as Unchanged. Open `.e2e/<app>/.redline/report/index.html` to see the report.
 
 The suites are local only. It needs no auth, backend or credentials. The `VITE_CONVEX_URL` it sets on the dev server is a made-up URL (`e2e/env.ts`); nothing connects to it. CI runs the same commands on Node 22 (`.github/workflows/ci.yml`).
 
@@ -643,7 +645,7 @@ docs/              Convex local snapshots
 - History builds of client-side routers need the router to respect Vite's `base` (`import.meta.env.BASE_URL`).
 - Vite History builds inline your current public `VITE_*` values, not the ones at that commit. Env files are copied (filtered) from your working tree, not read from history. An env file committed at that commit is used as committed, without filtering.
 - The read-only network layer covers `fetch` and `XMLHttpRequest` only. WebSockets, `EventSource` and `navigator.sendBeacon` are not intercepted.
-- Next.js History builds override `basePath`, `assetPrefix`, `distDir` and the tracing root for the snapshot. Code that hard-codes root-relative URLs (for example `fetch('/api/x')`, not through `next/link` or the base path) calls the live dev server, not the snapshot, unless a fixture matches it. Writes are always blocked. `next build` must succeed at that commit, type checks and lint included.
+- Next.js History builds override `basePath`, `assetPrefix`, `distDir` and the tracing root for the snapshot. Code that hard-codes root-relative URLs (for example `fetch('/api/x')`, not through `next/link` or the base path) calls the live dev server, not the snapshot, unless a fixture matches it. The History preview must stay under `/__redline/h/<sha>/`, because the iframe has to load from the dev server's own origin. `redline compare` does not have this limit: it serves each build at the root of its own port. Writes are always blocked. `next build` must succeed at that commit, type checks and lint included.
 - Each Next.js preview is a separate Node process. It uses the memory that `next start` would. Lower `history.maxBuilds` if that is a problem.
 - The toolbar can be moved with a pointer only. There is no keyboard control for its position.
 - The endpoints run `git` commands and builds in the project root. They are meant for local dev servers and must not be exposed publicly.

@@ -469,7 +469,7 @@ export async function compare(options: CompareOptions = {}): Promise<CompareResu
     importSnapshot(convexDir, snapshotFile, { allowProd, log });
   };
   const cacheKey = (options.cache ?? config.cache ?? !!snapshotFile)
-    ? hashOf({ v: CAPTURE_CACHE_VERSION, viewport, mask, hide, env, network, blockConvexWrites, login: login ? loginKey(root, options.hooks ?? config.hooks, options.auth ?? config.auth) : null, serve, snapshot: snapshotFile ? fileStamp(snapshotFile) : null })
+    ? hashOf({ v: CAPTURE_CACHE_VERSION, mount: 'root', viewport, mask, hide, env, network, blockConvexWrites, login: login ? loginKey(root, options.hooks ?? config.hooks, options.auth ?? config.auth) : null, serve, snapshot: snapshotFile ? fileStamp(snapshotFile) : null })
     : null;
 
   const baseRefName = options.base ?? 'HEAD~1';
@@ -489,7 +489,8 @@ export async function compare(options: CompareOptions = {}): Promise<CompareResu
   const fileDiffs = diffBetween(top, rel, baseSha, headSha);
   log(`${changed.length + deleted.length} changed file(s); framework ${framework}`);
 
-  const builds = new BuildManager({ root, framework: buildFramework(framework), capture: false, maxReady: 10, env });
+  // Root mount: each build at `/` on its own port, so root-absolute fetches and redirects resolve.
+  const builds = new BuildManager({ root, framework: buildFramework(framework), capture: false, maxReady: 10, env, mount: 'root' });
   const closers: (() => Promise<void>)[] = [];
   try {
     if (serve === 'build') {
@@ -512,6 +513,7 @@ export async function compare(options: CompareOptions = {}): Promise<CompareResu
     const newContext = async (state?: StorageState) => {
       const c = await stableContext(browser, viewport, now, state);
       if (network === 'live') await c.addInitScript('window.__redlineNetworkLive = true;');
+      else if (serve === 'build') await c.addInitScript('window.__redlineNetworkReplay = true;');
       if (blockConvexWrites) await c.addInitScript(CONVEX_WRITE_GUARD);
       return c;
     };
