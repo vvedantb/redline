@@ -5,7 +5,7 @@ export { renderSummary, SUMMARY_MARKER } from './compare/summary';
 export type { SummaryOptions } from './compare/summary';
 export { postPrComment } from './github';
 export type { SharedChange } from './compare/groups';
-export { discoverRoutes, matchPattern, patternFor, parseSitemap, DEFAULT_MAX_ROUTES } from './routes/discover';
+export { discoverRoutes, isSignOutPath, matchPattern, patternFor, parseSitemap, DEFAULT_MAX_ROUTES } from './routes/discover';
 export type { DiscoverOptions, DiscoverResult, DiscoveredRoute, SkippedRoute, RouteOrigin } from './routes/discover';
 export { affectedRoutes, frameworkForRoot, isDynamicRoute } from './routes/affected';
 export type { AffectedRoute, AffectedRoutesOptions, AffectedRoutesResult, Framework, RouteSource } from './routes/affected';

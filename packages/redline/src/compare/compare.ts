@@ -11,13 +11,13 @@ import { parseEnvText } from '../env';
 import { analyzeRoutePair, createJevClient, JEV_SKIPPED_NOTICE, mockJevFetch, type JevAnalysis, type JevCandidate, type JevClient } from '../jev';
 import { resolveCommit } from '../server';
 import { affectedRoutes, isDynamicRoute, type AffectedRoute, type AffectedRoutesResult, type Framework } from '../routes/affected';
-import { capRoutes, DEFAULT_CONCURRENCY, DEFAULT_MAX_ROUTES, discoverRoutes, patternFor, type DiscoveredRoute, type RouteOrigin, type RoutePath } from '../routes/discover';
+import { capRoutes, DEFAULT_CONCURRENCY, DEFAULT_MAX_ROUTES, discoverRoutes, parseSignOutPaths, patternFor, SIGN_OUT_SKIPPED, signOutLast, type DiscoveredRoute, type RouteOrigin, type RoutePath } from '../routes/discover';
 import type { BuildFramework } from '../types';
 import { capturePage, CONVEX_WRITE_GUARD, DEFAULT_VIEWPORT, launchBrowser, stableContext, type BrowserOptions, type PageCapture, type Viewport } from './capture';
 import { startDevServer } from './devserver';
 import { groupSharedChanges } from './groups';
 import { mapPool } from './pool';
-import { BLANK_BOTH, classify, rankPages, type PageStatus } from './classify';
+import { BLANK_BOTH, SIGNED_OUT, classify, maybeSignedOut, rankPages, type PageStatus } from './classify';
 import { diffImages, dropLoadNoise, regionHashes, type Region } from './pixels';
 import { buildRouteChanges } from './routechanges';
 import { writeReport, type CommitRef, type PageShot, type Report, type ReportFileDiff, type ReportPage } from './report';
@@ -51,6 +51,8 @@ export interface CompareOptions {
   auth?: LoginHook | string;
   /** Hooks, or a module path that exports them: `login` and `routePath`. */
   hooks?: CompareHooks | string;
+  /** Sign-out paths the crawl never follows, on top of the built-in `logout`, `signout` and similar ones. */
+  signOutPaths?: string[];
   /** `build` serves production builds. `dev` runs each commit's dev server in turn. Default `build`. */
   serve?: ServeMode;
   /** Pages loaded at once. Default 4. */
@@ -61,6 +63,11 @@ export interface CompareOptions {
   hide?: string[];
   /** Paths or route patterns never captured, such as sign-in callbacks. */
   exclude?: string[];
+  /**
+   * App paths of the sign-in screen. With a login hook, a page that ends on one of them (or under
+   * one) is "Couldn't check: signed out". Default: paths like `/login`, `/sign-in`, `/auth`, `/sso`.
+   */
+  signInPaths?: string[];
   /** Drop Convex mutations and actions sent by captured pages. */
   blockConvexWrites?: boolean;
   /** `affected`: capture only pages the changed files reach, plus a sample of the rest. Default `all`. */
@@ -133,11 +140,14 @@ export interface RedlineConfig {
   auth?: string;
   /** Module, relative to the app directory, exporting `login` and `routePath`. */
   hooks?: string;
+  /** Checked by `parseSignOutPaths`: the file is read without a schema. */
+  signOutPaths?: string[];
   serve?: ServeMode;
   concurrency?: number;
   mask?: string[];
   hide?: string[];
   exclude?: string[];
+  signInPaths?: string[];
   blockConvexWrites?: boolean;
   scope?: CaptureScope;
   sample?: number;
@@ -150,10 +160,21 @@ export const CONFIG_FILE = 'redline.config.json';
 export function readConfig(root: string): RedlineConfig {
   const file = path.join(root, CONFIG_FILE);
   if (!fs.existsSync(file)) return {};
+  let config: RedlineConfig;
   try {
-    return JSON.parse(fs.readFileSync(file, 'utf8')) as RedlineConfig;
+    config = JSON.parse(fs.readFileSync(file, 'utf8')) as RedlineConfig;
   } catch (err) {
     throw new Error(`${CONFIG_FILE} is not valid JSON: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  checkSignInPaths(config.signInPaths);
+  return config;
+}
+
+/** A string such as `"/signin"` would spread into single characters and match nothing, so fail loudly. */
+function checkSignInPaths(paths: RedlineConfig['signInPaths']): void {
+  if (paths === undefined) return;
+  if (!Array.isArray(paths) || !paths.every((p) => typeof p === 'string' && p.startsWith('/'))) {
+    throw new Error(`${CONFIG_FILE}: "signInPaths" must be a list of app paths that start with "/", such as ["/signin"].`);
   }
 }
 
@@ -292,7 +313,7 @@ function clearOut(outDir: string): void {
 
 const DEFAULT_SAMPLE = 5;
 /** Bump when a change to capturing makes old cached screenshots wrong. */
-const CAPTURE_CACHE_VERSION = 6;
+const CAPTURE_CACHE_VERSION = 8;
 
 function hashOf(value: unknown): string {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex').slice(0, 16);
@@ -344,9 +365,20 @@ export function readCachedCapture(root: string, sha: string, key: string, appPat
   }
 }
 
-/** Keep a capture for later runs. Failed loads are not kept, so they are tried again. */
-export function writeCachedCapture(root: string, sha: string, key: string, appPath: string, page: PageCapture): void {
+/**
+ * Keep a capture for later runs. Failed loads are not kept, so they are tried again. With a login
+ * hook, captures that may be signed out are not kept either, so a failed sign-in is not reused.
+ */
+export function writeCachedCapture(
+  root: string,
+  sha: string,
+  key: string,
+  appPath: string,
+  page: PageCapture,
+  signIn?: { login: boolean; signInPaths?: string[] },
+): void {
   if (page.failed) return;
+  if (signIn?.login && maybeSignedOut(page, signIn.signInPaths)) return;
   const { json, png } = cacheFiles(root, sha, key, appPath);
   fs.mkdirSync(path.dirname(json), { recursive: true });
   if (page.image) fs.copyFileSync(page.image, png);
@@ -413,11 +445,13 @@ export async function compare(options: CompareOptions = {}): Promise<CompareResu
   const env = readEnvFile(root, options.envFile ?? config.envFile);
   const network = options.network ?? config.network ?? 'read-only';
   const { login, routePath } = await loadHooks(root, options.hooks ?? config.hooks, options.auth ?? config.auth);
+  const { paths: signOutPaths, ignored: ignoredSignOutPaths } = parseSignOutPaths([...(config.signOutPaths ?? []), ...(options.signOutPaths ?? [])]);
   const serve = options.serve ?? config.serve ?? 'build';
   const concurrency = Math.max(1, options.concurrency ?? config.concurrency ?? DEFAULT_CONCURRENCY);
   const mask = [...(config.mask ?? []), ...(options.mask ?? [])];
   const hide = [...(config.hide ?? []), ...(options.hide ?? [])];
   const exclude = new Set([...(config.exclude ?? []), ...(options.exclude ?? [])]);
+  const signInPaths = [...(config.signInPaths ?? []), ...(options.signInPaths ?? [])];
   const blockConvexWrites = options.blockConvexWrites ?? config.blockConvexWrites ?? false;
   const scope = options.scope ?? config.scope ?? 'all';
   const sample = options.sample ?? config.sample ?? DEFAULT_SAMPLE;
@@ -537,7 +571,7 @@ export async function compare(options: CompareOptions = {}): Promise<CompareResu
     log('Finding pages...');
     const affectedPatterns = new Set([...affected.routes, ...affected.removed].map((r) => r.route));
     const targets = scope === 'affected' ? [...affectedPatterns].filter(isDynamicRoute) : undefined;
-    const discover = { seeds, maxRoutes: Infinity, framework, context, routePath, concurrency, targets };
+    const discover = { seeds, maxRoutes: Infinity, framework, context, routePath, concurrency, targets, signOutPaths };
     const [before, after] = await Promise.all([
       discoverRoutes({ ...discover, root: baseTree, baseUrl: baseServed.url }),
       discoverRoutes({ ...discover, root: headTree, baseUrl: headServed?.url }),
@@ -556,15 +590,22 @@ export async function compare(options: CompareOptions = {}): Promise<CompareResu
       }))
       .filter((r) => !exclude.has(r.path) && !(r.pattern && exclude.has(r.pattern)));
     const scoped = scope === 'affected' ? scopeToAffected(all, patterns, affectedPatterns, sample) : null;
-    const { routes, skipped } = capRoutes(scoped?.routes ?? all, maxRoutes, scoped?.patterns ?? patterns);
+    const capped = capRoutes(scoped?.routes ?? all, maxRoutes, scoped?.patterns ?? patterns);
+    // Seeds that sign out load after every other page, so they cannot sign those out.
+    const { routes, last: signOutSeeds } = signOutLast(capped.routes, signOutPaths);
+    const firstCount = routes.length - signOutSeeds.length;
+    const signOutSkipped = [...before.skipped, ...after.skipped].filter((s) => s.reason === SIGN_OUT_SKIPPED && !exclude.has(s.route));
+    const skipped = [...capped.skipped, ...new Map(signOutSkipped.map((s) => [s.route, s])).values()];
 
     clearOut(outDir);
     const images = path.join(outDir, 'images');
     const shotFile = (i: number, side: string) => path.join(images, `${String(i).padStart(3, '0')}-${side}.png`);
     log(`Capturing ${routes.length} page(s) at both commits, ${concurrency} at a time...`);
     let cached = 0;
-    const capture = (served: Served, side: 'before' | 'after', sha: string) =>
-      mapPool(routes, concurrency, async (route, i) => {
+    // `from`/`to` pick a slice of `routes`, so sign-out seeds can be captured after the rest.
+    const capture = (served: Served, side: 'before' | 'after', sha: string, from: number, to: number) =>
+      mapPool(routes.slice(from, to), concurrency, async (route, j) => {
+        const i = from + j;
         const file = shotFile(i, side);
         const hit = cacheKey ? readCachedCapture(root, sha, cacheKey, route.path, file) : null;
         if (hit) {
@@ -572,23 +613,25 @@ export async function compare(options: CompareOptions = {}): Promise<CompareResu
           return hit;
         }
         const page = await isolated(served.url, route.path, file);
-        if (cacheKey) writeCachedCapture(root, sha, cacheKey, route.path, page);
+        if (cacheKey) writeCachedCapture(root, sha, cacheKey, route.path, page, { login: !!login, signInPaths });
         return page;
       });
     if (snapshotFile && dataSnapshot?.restore === 'each') restoreData('before base captures');
-    const befores = await capture(baseServed, 'before', baseSha);
+    const befores = await capture(baseServed, 'before', baseSha, 0, firstCount);
     if (!headServed) {
+      // Dev mode serves one commit at a time, so base's sign-out seeds load before head signs in.
+      befores.push(...(await capture(baseServed, 'before', baseSha, firstCount, routes.length)));
       await baseServed.close();
       headServed = await open(headSha, 'head');
     }
     if (snapshotFile && dataSnapshot?.restore === 'each') restoreData('before head captures');
-    const afters = await capture(headServed, 'after', headSha);
-    if (cached) log(`Reused ${cached} screenshot(s) from earlier runs.`);
+    const afters = await capture(headServed, 'after', headSha, 0, firstCount);
 
     // Diff, then load each changed page at head once more: areas that also differ between two
     // loads of the same commit are live data or timing, not the change.
     const servedHead = headServed;
-    const diffs = await mapPool(routes, concurrency, async (route, i) => {
+    const diff = (from: number, to: number) => mapPool(routes.slice(from, to), concurrency, async (route, j) => {
+      const i = from + j;
       const b = befores[i];
       const a = afters[i];
       if (!b.image || !a.image || b.failed || a.failed) return { regions: [] as Region[], changedRatio: 0, unstable: 0 };
@@ -606,12 +649,20 @@ export async function compare(options: CompareOptions = {}): Promise<CompareResu
       const regions = dropLoadNoise(beforePng, afterPng, againPng, d.regions, { minArea: options.minArea });
       return { regions, changedRatio: regions.length ? d.changedRatio : 0, unstable: d.regions.length - regions.length };
     });
+    const diffs = await diff(0, firstCount);
+    // Sign-out seeds last, once every other page is captured and rechecked at both commits.
+    if (befores.length < routes.length) befores.push(...(await capture(baseServed, 'before', baseSha, firstCount, routes.length)));
+    afters.push(...(await capture(servedHead, 'after', headSha, firstCount, routes.length)));
+    diffs.push(...(await diff(firstCount, routes.length)));
+    if (cached) log(`Reused ${cached} screenshot(s) from earlier runs.`);
 
     const jev = jevClient(options);
     const notices: string[] = [];
     if (!jev) notices.push(JEV_SKIPPED_NOTICE);
     if (scoped) notices.push(`Only pages the changed files reach were captured, plus ${scoped.sampled} other page(s) as a sample. ${scoped.left} page(s) were left out.`);
     if (wantedSnapshot && !snapshotFile) notices.push(`The data snapshot ${dataSnapshot!.file} does not exist, so pages showed live data and no screenshots were cached. Make one with \`redline snapshot\`.`);
+    if (signOutSeeds.length) notices.push(`Seed(s) ${signOutSeeds.map((r) => r.path).join(', ')} look like sign-out routes, so they were captured last, after every other page.`);
+    if (ignoredSignOutPaths.length) notices.push(`signOutPaths entries ${ignoredSignOutPaths.join(', ')} were ignored: each must be a path that starts with "/", other than "/" itself.`);
     if (cached) notices.push(`${cached} screenshot(s) were reused from earlier runs of the same commits and settings.`);
     const pages: Omit<ReportPage, 'id'>[] = [];
     const keysByPath = new Map<string, string[]>();
@@ -621,7 +672,7 @@ export async function compare(options: CompareOptions = {}): Promise<CompareResu
       const { regions, changedRatio, unstable } = diffs[i];
       const inBase = patternFor(route.path, before.patterns, routePath) !== null;
       const inHead = patternFor(route.path, after.patterns, routePath) !== null;
-      const classified = classify({ before: b, after: a, regions, inBase, inHead });
+      const classified = classify({ before: b, after: a, regions, inBase, inHead, login: !!login, signInPaths });
       const { status } = classified;
       const reason = status === 'unchanged' && unstable
         ? `Only areas that differ between two loads of the same commit changed (${unstable})`
@@ -668,6 +719,10 @@ export async function compare(options: CompareOptions = {}): Promise<CompareResu
     if (overCap) notices.push(`${overCap} page(s) were not captured because of the ${maxRoutes}-page limit. Raise it with --max-routes.`);
     if (routes.length && pages.filter((p) => p.reason === BLANK_BOTH).length === routes.length) {
       notices.push('Every page was blank at both commits. Builds run without secret and Convex env keys, so an app that needs them to start renders nothing.');
+    }
+    const signedOut = ranked.filter((p) => p.reason.startsWith(SIGNED_OUT)).length;
+    if (signedOut) {
+      notices.push(`${signedOut} page(s) ended on a sign-in screen, so they were not compared. The login hook may have failed, or the session ended during the run. Set "signInPaths" if your sign-in screen has another path.`);
     }
     const unstablePages = ranked.filter((p) => p.unstable);
     if (unstablePages.length) {
