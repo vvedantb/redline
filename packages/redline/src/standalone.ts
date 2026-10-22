@@ -1,9 +1,11 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
+import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createRequire } from 'node:module';
 import net from 'node:net';
 import path from 'node:path';
 import { filterEnvRecord, filterEnvText } from './env';
+import { injectBootstrap } from './network/serve';
 import { HISTORY_PREFIX, isFullSha } from './paths';
 
 /**
@@ -298,6 +300,52 @@ export async function proxyRequest(request: Request, origin: string, target: str
   const location = out.get('location');
   if (location?.startsWith(origin)) out.set('location', location.slice(origin.length) || '/');
   return new Response(request.method === 'HEAD' ? null : upstream.body, { status: upstream.status, statusText: upstream.statusText, headers: out });
+}
+
+/** `proxyRequest`, with the read-only network bootstrap added to HTML pages. */
+export async function proxyPage(request: Request, origin: string, target: string): Promise<Response> {
+  const res = await proxyRequest(request, origin, target);
+  if (request.method !== 'GET' || !(res.headers.get('content-type') ?? '').includes('text/html')) return res;
+  // Buffer HTML pages to add the read-only network bootstrap. Other responses stream.
+  return new Response(injectBootstrap(await res.text()), { status: res.status, statusText: res.statusText, headers: res.headers });
+}
+
+/** A Node request as a fetch `Request`, with its body read in full. */
+export async function toWebRequest(req: IncomingMessage): Promise<Request> {
+  const headers = new Headers();
+  for (const [key, value] of Object.entries(req.headers)) {
+    for (const v of Array.isArray(value) ? value : value === undefined ? [] : [value]) headers.append(key, v);
+  }
+  const method = req.method ?? 'GET';
+  const body =
+    method === 'GET' || method === 'HEAD'
+      ? undefined
+      : await new Promise<Uint8Array<ArrayBuffer>>((resolve, reject) => {
+          const chunks: Buffer[] = [];
+          req.on('data', (chunk: Buffer) => chunks.push(chunk));
+          req.on('end', () => resolve(new Uint8Array(Buffer.concat(chunks))));
+          req.on('error', reject);
+        });
+  return new Request(new URL(req.url ?? '/', `http://${req.headers.host ?? '127.0.0.1'}`), { method, headers, body });
+}
+
+/** Write a fetch `Response` to a Node response, streaming the body and keeping every `Set-Cookie`. */
+export async function sendWebResponse(res: ServerResponse, response: Response): Promise<void> {
+  res.statusCode = response.status;
+  response.headers.forEach((value, key) => {
+    if (key !== 'set-cookie') res.setHeader(key, value);
+  });
+  const cookies = response.headers.getSetCookie();
+  if (cookies.length > 0) res.setHeader('set-cookie', cookies);
+  if (!response.body) return void res.end();
+  const reader = response.body.getReader();
+  res.on('close', () => void reader.cancel().catch(() => {}));
+  try {
+    for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) res.write(chunk.value);
+    res.end();
+  } catch {
+    res.destroy();
+  }
 }
 
 /** A running standalone server. */

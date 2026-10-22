@@ -66,7 +66,7 @@ describe('injectBootstrap', () => {
 });
 
 /** Run the served bootstrap in a fresh context with a fake window at `href`. */
-function runBootstrap(href: string, live = false) {
+function runBootstrap(href: string, live = false, replay = false) {
   const calls: string[] = [];
   const fetch = async (input: string | Request, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input.url;
@@ -86,17 +86,35 @@ function runBootstrap(href: string, live = false) {
     }
   }
   const location = new URL(href);
-  const window: { location: URL; fetch: typeof fetch; XMLHttpRequest: typeof FakeXHR; __redlineNetwork?: RedlineNetworkState; __redlineNetworkLive?: boolean } = {
+  const window: {
+    location: URL;
+    fetch: typeof fetch;
+    XMLHttpRequest: typeof FakeXHR;
+    __redlineNetwork?: RedlineNetworkState;
+    __redlineNetworkLive?: boolean;
+    __redlineNetworkReplay?: boolean;
+  } = {
     location,
     fetch,
     XMLHttpRequest: FakeXHR,
     __redlineNetworkLive: live,
+    __redlineNetworkReplay: replay,
   };
   vm.runInNewContext(bootstrapScript(), { window, URL, URLSearchParams, Request, Response, Headers, Blob, Map, WeakMap, Promise, JSON, Event, setTimeout });
   return { window, calls };
 }
 
 describe('bootstrap script', () => {
+  it('replays at the root of a port when __redlineNetworkReplay is set, as compare does', async () => {
+    const { window, calls } = runBootstrap('http://127.0.0.1:4321/about', false, true);
+    expect(window.__redlineNetwork).toMatchObject({ mode: 'replay', readOnly: true });
+    const write = await window.fetch('/api/notes', { method: 'POST', body: '{}' });
+    expect(write.headers.get('x-redline-read-only')).toBe('1');
+    expect(calls).toEqual(['GET /__redline/network/fixtures']);
+    // network: 'live' still wins.
+    expect(runBootstrap('http://127.0.0.1:4321/', true, true).window.__redlineNetwork?.mode).toBe('passthrough');
+  });
+
   it('replays fixtures and blocks writes in History pages', async () => {
     const { window, calls } = runBootstrap(BASE);
     expect(window.__redlineNetwork).toMatchObject({ mode: 'replay', readOnly: true });

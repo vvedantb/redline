@@ -2,10 +2,10 @@ import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { BuildManager, DEFAULT_MAX_READY } from './build';
-import { defaultFixturesFile, injectBootstrap, networkAsset } from './network/serve';
+import { defaultFixturesFile, networkAsset } from './network/serve';
 import { ENDPOINT } from './paths';
 import { handleRedlineRequest, DEFAULT_EXTENSIONS, type RedlineServerOptions } from './server';
-import { historyTarget, proxyRequest } from './standalone';
+import { historyTarget, proxyPage } from './standalone';
 import { TRANSFORM_FILE, type TagOptions } from './transform';
 import type { RedlineHistoryOptions } from './types';
 
@@ -218,10 +218,7 @@ async function serveHistory(opts: RedlineServerOptions, request: Request, action
     return plain(502, `The History server did not start: ${err instanceof Error ? err.message : String(err)}`);
   }
   if (!origin) return plain(404, 'No ready build for this commit');
-  const res = await proxyRequest(request, origin, target.path + new URL(request.url).search);
-  if (request.method !== 'GET' || !(res.headers.get('content-type') ?? '').includes('text/html')) return res;
-  // Buffer HTML pages to add the read-only network bootstrap. Other responses stream.
-  return new Response(injectBootstrap(await res.text()), { status: res.status, statusText: res.statusText, headers: res.headers });
+  return proxyPage(request, origin, target.path + new URL(request.url).search);
 }
 
 function serveThumbnail(opts: RedlineServerOptions, url: URL): Response {

@@ -4,7 +4,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { BuildManager, buildPaths, readMeta, resolveStaticFile, writeMeta, type ExecFn } from '../src/build';
+import { BuildManager, buildBasePath, buildPaths, readMeta, resolveStaticFile, writeMeta, type ExecFn } from '../src/build';
 import { createMiddleware } from '../src/http';
 import { historyBasePath, isFullSha } from '../src/paths';
 import { handleRedlineRequest } from '../src/server';
@@ -97,6 +97,15 @@ describe('paths', () => {
     expect(p.worktree).toBe(path.join('/p', '.redline', 'worktrees', sha));
     expect(p.thumbnail).toBe(path.join('/p', '.redline', 'snapshots', sha, 'thumb.png'));
     expect(historyBasePath(sha)).toBe(`/__redline/h/${sha}/`);
+  });
+
+  it('keeps root builds apart from History builds', () => {
+    const sha = 'a'.repeat(40);
+    const p = buildPaths('/p', sha, 'root');
+    expect(p.dir).toBe(path.join('/p', '.redline', 'builds-root', sha));
+    expect(p.worktree).toBe(path.join('/p', '.redline', 'worktrees-root', sha));
+    expect(buildBasePath(sha, 'root')).toBe('/');
+    expect(buildBasePath(sha, 'history')).toBe(historyBasePath(sha));
   });
 
   it('rejects anything but a full SHA', () => {
@@ -202,6 +211,84 @@ describe('BuildManager', () => {
     // The main tree was not touched.
     expect(git(root, 'rev-parse', 'HEAD')).toBe(shas[2]);
     expect(git(root, 'status', '--porcelain', '--untracked-files=no')).toBe('');
+  });
+
+  it('builds at / with mount: root and serves the build at the root of its own port', async () => {
+    const fake = fakeExec();
+    const history = new BuildManager({ root, exec: fake.exec, capture: false });
+    history.enqueue(shas[0]);
+    await history.whenIdle();
+    const builds = new BuildManager({ root, exec: fake.exec, capture: false, mount: 'root' });
+    // A History build of the same commit is not a root build.
+    expect(builds.get(shas[0])).toBeNull();
+    builds.enqueue(shas[0]);
+    await builds.whenIdle();
+
+    const p = buildPaths(root, shas[0], 'root');
+    expect(JSON.parse(fs.readFileSync(p.meta, 'utf8'))).toMatchObject({ status: 'ready', basePath: '/' });
+    const vite = fake.calls.filter((c) => c.cmd === process.execPath).at(-1);
+    expect(vite?.args).toEqual(expect.arrayContaining(['build', '--base', '/', '--outDir', p.dist]));
+    // The History build is still there, and a restart reads each kind from its own directory.
+    expect(history.distFor(shas[0])).toBe(buildPaths(root, shas[0]).dist);
+    expect(new BuildManager({ root, exec: fake.exec, capture: false, mount: 'root' }).get(shas[0])?.basePath).toBe('/');
+
+    const preview = await builds.preview(shas[0]);
+    try {
+      expect(preview.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/$/);
+      const page = await fetch(new URL('/about', preview.url));
+      expect(page.status).toBe(200);
+      const html = await page.text();
+      expect(html).toContain('<script src="/assets/app.js">');
+      expect(html).toContain('/__redline/network/bootstrap.js');
+      expect((await fetch(new URL('/assets/app.js', preview.url))).status).toBe(200);
+      expect((await fetch(new URL('/__redline/network/fixtures', preview.url))).status).toBe(200);
+    } finally {
+      await preview.close();
+    }
+  });
+
+  it('never deletes History builds, worktrees or thumbnails from a root manager', async () => {
+    const fake = fakeExec();
+    const history = new BuildManager({
+      root,
+      exec: fake.exec,
+      capture: async ({ out }) => {
+        fs.writeFileSync(out, 'png');
+        return true;
+      },
+    });
+    history.enqueue(shas[0]);
+    await history.whenIdle();
+    const kept = buildPaths(root, shas[0]);
+    fs.mkdirSync(kept.worktree, { recursive: true });
+
+    const builds = new BuildManager({
+      root,
+      exec: fake.exec,
+      capture: async ({ out }) => {
+        fs.writeFileSync(out, 'root png');
+        return true;
+      },
+      mount: 'root',
+      maxReady: 1,
+    });
+    builds.enqueue(shas[0]);
+    await builds.whenIdle();
+    expect(buildPaths(root, shas[0], 'root').thumbnail).not.toBe(kept.thumbnail);
+    // Building another commit evicts the root build of shas[0]; removing that one cleans up too.
+    builds.enqueue(shas[1]);
+    await builds.whenIdle();
+    expect(builds.get(shas[0])).toBeNull();
+    expect(builds.remove(shas[1])).toBe(true);
+    for (const sha of [shas[0], shas[1]]) {
+      expect(fs.existsSync(buildPaths(root, sha, 'root').dir)).toBe(false);
+      expect(fs.existsSync(buildPaths(root, sha, 'root').snapshot)).toBe(false);
+    }
+
+    expect(fs.readFileSync(kept.thumbnail, 'utf8')).toBe('png');
+    expect(fs.existsSync(path.join(kept.dist, 'index.html'))).toBe(true);
+    expect(fs.existsSync(kept.worktree)).toBe(true);
+    expect(history.thumbnailFile(shas[0])).toBe(kept.thumbnail);
   });
 
   it('returns the existing job instead of queueing twice', async () => {
