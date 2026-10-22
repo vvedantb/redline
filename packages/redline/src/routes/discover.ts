@@ -2,6 +2,9 @@ import type { BrowserContext } from 'playwright-core';
 import { capturePage, launchBrowser, stableContext, type BrowserOptions } from '../compare/capture';
 import { mapPool } from '../compare/pool';
 import { isDynamicRoute, routeEntries, type Framework } from './affected';
+import { matchPattern } from './pattern';
+
+export { matchPattern };
 
 export type RouteOrigin = 'file' | 'link' | 'sitemap' | 'seed' | 'derived';
 
@@ -59,22 +62,6 @@ export const DEFAULT_MAX_ROUTES = 50;
 const CRAWL_DEPTH = 4;
 export const DEFAULT_CRAWL_BUDGET = 150;
 export const DEFAULT_CONCURRENCY = 4;
-
-function segmentRegex(seg: string): string {
-  let m: RegExpMatchArray | null;
-  if ((m = seg.match(/^\[\[\.\.\.[^\]]+\]\]$/))) return '(?:/.+)?';
-  if ((m = seg.match(/^\[\.\.\.[^\]]+\]$/))) return '/.+';
-  if (/^\[[^\]]+\]$/.test(seg) || /^:\w+\??$/.test(seg)) return '/[^/]+';
-  if (seg === '*') return '(?:/.*)?';
-  return '/' + seg.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-/** Does `appPath` match a route pattern such as `/blog/[slug]`, `/docs/[...slug]` or `/users/:id`? */
-export function matchPattern(pattern: string, appPath: string): boolean {
-  const segs = pattern.split('/').filter(Boolean);
-  const re = segs.length ? segs.map(segmentRegex).join('') : '/';
-  return new RegExp(`^${re}/?$`).test(appPath === '' ? '/' : appPath);
-}
 
 /** The pattern that best describes `appPath`: an exact static route first, then the most specific dynamic one. */
 export function patternFor(appPath: string, patterns: string[], routePath: RoutePath = same): string | null {

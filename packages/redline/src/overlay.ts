@@ -4,6 +4,7 @@ export {
   pinBaseline,
   getBaseline,
   getLog,
+  getPages,
   clearBaseline,
   refreshRedline,
   DEFAULT_ENDPOINT,

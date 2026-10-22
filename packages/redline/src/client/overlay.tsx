@@ -5,10 +5,11 @@ import { matchChangedRegions, type TaggedNode } from '../match';
 import { HISTORY_PREFIX } from '../paths';
 import { SOURCE_ATTR, parseSource } from '../source';
 import type { BuildJob, CommitInfo, DiffFile, DiffHunk, DiffResponse } from '../types';
-import { DEFAULT_ENDPOINT, REFRESH_EVENT, getLog } from './baseline';
+import { DEFAULT_ENDPOINT, REFRESH_EVENT, getLog, getPages } from './baseline';
 import { buildStore, useBuilds } from './builds';
+import { latestOnly } from './latest';
 import { useToolbarPrefs } from './prefs';
-import { HistoryFrame, HistoryPanel, Toolbar, type HistoryState } from './toolbar';
+import { HistoryFrame, HistoryPanel, PagesPanel, Toolbar, type HistoryState, type PagesState } from './toolbar';
 
 export interface RedlineOverlayProps {
   /** Base URL of the Redline endpoints. Default `/__redline`. */
@@ -89,6 +90,12 @@ function collectRegions(diff: DiffResponse, root: Element | null): Region[] {
   }));
 }
 
+/** Changes when the set of changed files does, so the pages list is fetched again only then. */
+function pagesKey(diff: DiffResponse | null): string | null {
+  if (!diff || diff.mode === 'none') return null;
+  return [diff.baselineSha, diff.headSha, ...diff.files.map((f) => `${f.status}:${f.oldPath ?? ''}:${f.path}`)].join('|');
+}
+
 const shortSha = (sha: string | null) => (sha ? sha.replace(/^content:/, 'content ').slice(0, 15) : 'none');
 
 function statusText(diff: DiffResponse | null, count: number, outlines: boolean, viewing: CommitInfo | null, job?: BuildJob): string {
@@ -112,6 +119,12 @@ export function RedlineOverlay(props: RedlineOverlayProps) {
   // History view: show a production build of this commit in an iframe. Never pins or checks out.
   const [viewing, setViewing] = useState<CommitInfo | null>(null);
   const [history, setHistory] = useState<HistoryState | null>(null);
+  // Changed pages: fetched whenever the changed files change, shown in a panel on demand.
+  const [pages, setPages] = useState<PagesState | null>(null);
+  const [pagesOpen, setPagesOpen] = useState(false);
+  // Only the latest pages or history request may set state: a slow, stale answer is dropped.
+  const [pagesRequest] = useState(latestOnly);
+  const [historyRequest] = useState(latestOnly);
   const prefs = useToolbarPrefs();
   const rootRef = useRef<HTMLDivElement>(null);
   const historyOpen = history !== null;
@@ -204,29 +217,62 @@ export function RedlineOverlay(props: RedlineOverlayProps) {
     setRegions(collectRegions(diff, rootRef.current));
   }, [active, diff, layoutTick]);
 
+  const changedKey = pagesKey(diff);
+  const fetchPages = useCallback(async (fresh = false) => {
+    const isLatest = pagesRequest.start();
+    // Keep the last answer on screen while a new one loads; Refresh sets loading itself.
+    setPages((prev) => prev ?? { status: 'loading' });
+    try {
+      const response = await getPages({ endpoint, baseline, fresh });
+      if (isLatest()) setPages({ status: 'ready', response });
+    } catch (err) {
+      if (isLatest()) setPages({ status: 'error', error: err instanceof Error ? err.message : String(err) });
+    }
+  }, [endpoint, baseline, pagesRequest]);
+
   useEffect(() => {
-    if (!selected && !historyOpen) return;
+    if (!active || changedKey === null) {
+      pagesRequest.cancel();
+      setPages(null);
+      setPagesOpen(false);
+      return;
+    }
+    void fetchPages();
+  }, [active, changedKey, fetchPages, pagesRequest]);
+
+  useEffect(() => {
+    if (!selected && !historyOpen && !pagesOpen) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
       if (selected) setSelected(null);
-      else setHistory(null);
+      else if (pagesOpen) setPagesOpen(false);
+      else {
+        historyRequest.cancel();
+        setHistory(null);
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [selected, historyOpen]);
+  }, [selected, historyOpen, pagesOpen, historyRequest]);
 
   useEffect(() => {
     if (!active) setSelected(null);
   }, [active]);
 
   const loadHistory = async () => {
+    const isLatest = historyRequest.start();
     setHistory({ status: 'loading' });
     try {
       const log = await getLog({ endpoint });
-      setHistory({ status: 'ready', headSha: log.headSha, commits: log.commits });
+      if (isLatest()) setHistory({ status: 'ready', headSha: log.headSha, commits: log.commits });
     } catch (err) {
-      setHistory({ status: 'error', error: err instanceof Error ? err.message : String(err) });
+      if (isLatest()) setHistory({ status: 'error', error: err instanceof Error ? err.message : String(err) });
     }
+  };
+  // Closing History drops a pending `git log` answer, so it cannot reopen the panel later.
+  const closeHistory = () => {
+    historyRequest.cancel();
+    setHistory(null);
   };
   const view = (commit: CommitInfo | null) => {
     setSelected(null);
@@ -304,7 +350,17 @@ export function RedlineOverlay(props: RedlineOverlayProps) {
         status={statusText(diff, regions.length, prefs.outlines, viewing, viewingJob)}
         viewing={viewing}
         historyOpen={historyOpen}
-        onToggleHistory={() => (historyOpen ? setHistory(null) : void loadHistory())}
+        onToggleHistory={() => {
+          setPagesOpen(false);
+          if (historyOpen) closeHistory();
+          else void loadHistory();
+        }}
+        pages={pages}
+        pagesOpen={pagesOpen}
+        onTogglePages={() => {
+          closeHistory();
+          setPagesOpen(!pagesOpen);
+        }}
         onLatest={() => view(null)}
       />
 
@@ -319,7 +375,19 @@ export function RedlineOverlay(props: RedlineOverlayProps) {
           onRetry={(c) => void buildStore(endpoint).request(c.sha)}
           onLatest={() => view(null)}
           onRefresh={() => void loadHistory()}
-          onClose={() => setHistory(null)}
+          onClose={closeHistory}
+        />
+      )}
+
+      {pagesOpen && pages && (
+        <PagesPanel
+          pages={pages}
+          location={{ pathname: window.location.pathname, search: window.location.search }}
+          onRefresh={() => {
+            setPages({ status: 'loading' });
+            void fetchPages(true);
+          }}
+          onClose={() => setPagesOpen(false)}
         />
       )}
 
