@@ -1,33 +1,24 @@
-import { DOCS_URL, GITHUB_URL } from '../links';
-import { ArrowIcon, GitHubIcon } from './icons';
+import { Reveal, RevealItem } from './Reveal';
 import { SectionHeading } from './SectionHeading';
 
 export function Quickstart() {
   return (
     <section className="section" id="install" aria-labelledby="install-title">
       <div className="shell">
-        <div className="invert">
-          <div className="invert-text">
-            <SectionHeading id="install-title" eyebrow="Quickstart">
-              Add it to your dev server
+        <Reveal>
+          <RevealItem>
+            <SectionHeading id="install-title" eyebrow="Install">
+              Add it to your project
             </SectionHeading>
-            <p className="invert-lede">
-              Install the package, add the Vite plugin before <code>react()</code>, and mount the overlay once near
-              your app root. For Next.js, use <code>withRedline</code> and a catch-all API route.
-            </p>
-            <div className="hero-ctas left">
-              <a className="btn btn-inverse" href={GITHUB_URL}>
-                <GitHubIcon size={16} />
-                View on GitHub
-              </a>
-              <a className="btn btn-inverse-outline" href={DOCS_URL}>
-                Full setup
-                <ArrowIcon />
-              </a>
-            </div>
-          </div>
-          <div className="snippets">
-            <Snippet label="terminal">{`npm install -D @vvedantb/redline`}</Snippet>
+          </RevealItem>
+        </Reveal>
+        <Reveal as="div" className="snippets">
+          <RevealItem index={0}>
+            <Snippet label="terminal">{`npm install -D @vvedantb/redline playwright
+npx playwright install chromium
+npx redline compare`}</Snippet>
+          </RevealItem>
+          <RevealItem index={1}>
             <Snippet label="vite.config.ts">
               {`import react from '@vitejs/plugin-react';
 import { redline } from '@vvedantb/redline/vite';
@@ -37,6 +28,8 @@ export default defineConfig({
   plugins: [redline(), react()],
 });`}
             </Snippet>
+          </RevealItem>
+          <RevealItem index={2}>
             <Snippet label="App.tsx">
               {`import { RedlineOverlay } from '@vvedantb/redline/overlay';
 
@@ -49,8 +42,11 @@ export function App() {
   );
 }`}
             </Snippet>
-          </div>
-        </div>
+          </RevealItem>
+        </Reveal>
+        <p className="install-note">
+          The Vite plugin and overlay are optional. For Next.js, use <code>withRedline</code>.
+        </p>
       </div>
     </section>
   );

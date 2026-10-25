@@ -1,10 +1,11 @@
+import { Reveal, RevealItem } from './Reveal';
 import { SectionHeading } from './SectionHeading';
 
 export function OverlaySection() {
   return (
     <section className="section" id="overlay" aria-labelledby="overlay-title">
-      <div className="shell split">
-        <div className="split-text">
+      <Reveal className="shell split">
+        <RevealItem className="split-text">
           <SectionHeading id="overlay-title" eyebrow="The overlay">
             Changed elements, outlined where they render
           </SectionHeading>
@@ -26,9 +27,11 @@ export function OverlaySection() {
               Shows how many regions changed and the baseline. Hide outlines or open History from here.
             </li>
           </ul>
-        </div>
-        <OverlayMock />
-      </div>
+        </RevealItem>
+        <RevealItem index={1}>
+          <OverlayMock />
+        </RevealItem>
+      </Reveal>
     </section>
   );
 }

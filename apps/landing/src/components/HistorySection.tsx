@@ -1,3 +1,4 @@
+import { Reveal, RevealItem } from './Reveal';
 import { SectionHeading } from './SectionHeading';
 
 const COMMITS = [
@@ -10,8 +11,8 @@ const COMMITS = [
 export function HistorySection() {
   return (
     <section className="section" id="history" aria-labelledby="history-title">
-      <div className="shell split split-reverse">
-        <div className="split-text">
+      <Reveal className="shell split split-reverse">
+        <RevealItem className="split-text">
           <SectionHeading id="history-title" eyebrow="History">
             Open any commit, running
           </SectionHeading>
@@ -34,9 +35,11 @@ export function HistorySection() {
               network.
             </li>
           </ul>
-        </div>
-        <HistoryMock />
-      </div>
+        </RevealItem>
+        <RevealItem index={1}>
+          <HistoryMock />
+        </RevealItem>
+      </Reveal>
     </section>
   );
 }
