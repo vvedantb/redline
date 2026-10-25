@@ -29,33 +29,33 @@ function Wire({ compact = false }: { compact?: boolean }) {
   return (
     <div className="wire" aria-hidden="true">
       <div className="wire-nav">
-        <span className="blk w-16 h-3 dark" />
+        <span className="blk blk-w-16 blk-h-3 blk-dark" />
         <span className="wire-nav-links">
-          <span className="blk w-8 h-2" />
-          <span className="blk w-8 h-2" />
+          <span className="blk blk-w-8 blk-h-2" />
+          <span className="blk blk-w-8 blk-h-2" />
         </span>
       </div>
       <div className="wire-hero">
-        <span className="blk w-70 h-5 dark" />
-        <span className="blk w-50 h-5 dark" />
-        <span className="blk w-60 h-2 light" />
+        <span className="blk blk-w-70 blk-h-5 blk-dark" />
+        <span className="blk blk-w-50 blk-h-5 blk-dark" />
+        <span className="blk blk-w-60 blk-h-2 blk-light" />
         <span className="wire-row">
-          <span className="blk w-btn h-6 dark round" />
-          <span className="blk w-btn h-6 light round" />
+          <span className="blk blk-w-btn blk-h-6 dark round" />
+          <span className="blk blk-w-btn blk-h-6 light round" />
         </span>
-        <span className="outline o1" style={{ inset: '-8px -10px' }}>
-          <span className="outline-tag">src/Hero.tsx:4-9</span>
+        <span className="mock-outline o1" style={{ inset: '-8px -10px' }}>
+          <span className="mock-outline-tag">src/Hero.tsx:4-9</span>
         </span>
       </div>
       {compact ? null : (
         <div className="wire-cards">
           {[0, 1, 2].map((n) => (
             <span key={n} className="wire-card">
-              <span className="blk w-40 h-2 mid" />
-              <span className="blk w-80 h-2 light" />
+              <span className="blk blk-w-40 blk-h-2 blk-mid" />
+              <span className="blk blk-w-80 blk-h-2 blk-light" />
               {n === 1 ? (
-                <span className="outline o2" style={{ inset: '-5px' }}>
-                  <span className="outline-tag">src/Card.tsx:12</span>
+                <span className="mock-outline o2" style={{ inset: '-5px' }}>
+                  <span className="mock-outline-tag">src/Card.tsx:12</span>
                 </span>
               ) : null}
             </span>
@@ -105,19 +105,19 @@ export function ReportMock() {
           <div className="ba-pane">
             <span className="ba-label">Before</span>
             <div className="wire">
-              <span className="blk w-60 h-5 dark" />
-              <span className="blk w-80 h-2 light" />
-              <span className="blk w-btn h-6 dark round" />
+              <span className="blk blk-w-60 blk-h-5 blk-dark" />
+              <span className="blk blk-w-80 blk-h-2 blk-light" />
+              <span className="blk blk-w-btn blk-h-6 dark round" />
             </div>
           </div>
           <div className="ba-pane">
             <span className="ba-label">After</span>
             <div className="wire">
-              <span className="blk w-70 h-5 dark" />
-              <span className="blk w-80 h-2 light" />
+              <span className="blk blk-w-70 blk-h-5 blk-dark" />
+              <span className="blk blk-w-80 blk-h-2 blk-light" />
               <span className="wire-row rel">
-                <span className="blk w-btn h-6 dark round" />
-                <span className="outline o1" style={{ inset: '-4px -6px' }}>
+                <span className="blk blk-w-btn blk-h-6 dark round" />
+                <span className="mock-outline o1" style={{ inset: '-4px -6px' }}>
                   <span className="ba-num">1</span>
                 </span>
               </span>

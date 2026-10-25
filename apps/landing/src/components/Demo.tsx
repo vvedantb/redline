@@ -2,7 +2,8 @@ import { useState } from 'react';
 import { TABS, type TabId } from '../content';
 import { CompareIcon, HistoryIcon, OverlayIcon } from './icons';
 import { HistoryMock, OverlayMock, ReportMock } from './Mocks';
-import { Reveal } from './Reveal';
+import { LandingSection, LandingSectionHeading } from '@vvedantb/ui';
+import { LandingReveal, LandingRevealItem } from './kit';
 
 const ICONS = { compare: <CompareIcon />, overlay: <OverlayIcon />, history: <HistoryIcon /> } as const;
 const MOCKS = { compare: <ReportMock />, overlay: <OverlayMock />, history: <HistoryMock /> } as const;
@@ -21,15 +22,13 @@ export function Demo() {
   }
 
   return (
-    <section className="section" id="features" aria-labelledby="features-title">
-      <Reveal className="shell">
-        <div className="section-head reveal-item">
-          <h2 id="features-title" className="section-title">
-            See it work
-          </h2>
-          <p className="section-sub">Three surfaces. Click through them.</p>
-        </div>
-        <div className="tabs reveal-item" role="tablist" aria-label="Redline surfaces" style={{ '--i': 1 } as React.CSSProperties}>
+    <LandingSection id="features">
+      <LandingReveal>
+        <LandingRevealItem>
+          <LandingSectionHeading eyebrow="Features" heading="See it work" intro="Three surfaces. Click through them." />
+        </LandingRevealItem>
+        <LandingRevealItem>
+        <div className="tabs" role="tablist" aria-label="Redline surfaces">
           {TABS.map((t, i) => (
             <button
               key={t.id}
@@ -48,7 +47,9 @@ export function Demo() {
             </button>
           ))}
         </div>
-        <div className="demo reveal-item" id="demo-panel" role="tabpanel" aria-labelledby={`tab-${active}`} style={{ '--i': 2 } as React.CSSProperties}>
+        </LandingRevealItem>
+        <LandingRevealItem>
+        <div className="demo" id="demo-panel" role="tabpanel" aria-labelledby={`tab-${active}`}>
           <div className="demo-text">
             <h3 className="demo-title">{tab.title}</h3>
             <p className="demo-body">{tab.body}</p>
@@ -57,7 +58,8 @@ export function Demo() {
             {MOCKS[active]}
           </div>
         </div>
-      </Reveal>
-    </section>
+        </LandingRevealItem>
+      </LandingReveal>
+    </LandingSection>
   );
 }

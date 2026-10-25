@@ -26,3 +26,5 @@ export const TABS = [
 ] as const;
 
 export type TabId = (typeof TABS)[number]['id'];
+
+export const CAPABILITIES = ['Compare', 'Overlay', 'History', 'Report'] as const;

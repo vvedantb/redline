@@ -1,24 +1,23 @@
+import { LandingPageLayout, landingShellClass } from '@vvedantb/ui';
 import { Demo } from './components/Demo';
-import { Footer } from './components/Footer';
-import { Hero } from './components/Hero';
 import { HowItWorks } from './components/HowItWorks';
-import { Nav } from './components/Nav';
+import { LandingCta, LandingFooter, LandingHero, LandingNav } from './components/LandingChrome';
+import { OverlayMock } from './components/Mocks';
 import { Quickstart } from './components/Quickstart';
+import { LandingReveal, LandingRevealItem } from './components/kit';
 
 export function App() {
   return (
-    <div id="top" className="page">
-      <a className="skip-link" href="#main">
-        Skip to content
-      </a>
-      <Nav />
-      <main id="main">
-        <Hero />
-        <Demo />
-        <HowItWorks />
-        <Quickstart />
-      </main>
-      <Footer />
-    </div>
+    <LandingPageLayout nav={<LandingNav />} hero={<LandingHero />} footer={<LandingFooter />}>
+      <LandingReveal className={`${landingShellClass} pt-12 sm:pt-16`}>
+        <LandingRevealItem>
+          <OverlayMock />
+        </LandingRevealItem>
+      </LandingReveal>
+      <Demo />
+      <HowItWorks />
+      <Quickstart />
+      <LandingCta />
+    </LandingPageLayout>
   );
 }

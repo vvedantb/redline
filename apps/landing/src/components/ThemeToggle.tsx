@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Button } from '@vvedantb/ui';
 import { MoonIcon, SunIcon } from './icons';
 
 const STORAGE_KEY = 'redline-theme';
@@ -21,8 +22,14 @@ export function ThemeToggle() {
   }
 
   return (
-    <button type="button" className="icon-btn" onClick={toggle} aria-label={dark ? 'Switch to light theme' : 'Switch to dark theme'}>
+    <Button
+      type="button"
+      variant="ghost"
+      size="icon-sm"
+      onClick={toggle}
+      aria-label={dark ? 'Switch to light theme' : 'Switch to dark theme'}
+    >
       {dark ? <SunIcon /> : <MoonIcon />}
-    </button>
+    </Button>
   );
 }
