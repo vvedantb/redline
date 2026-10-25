@@ -1,15 +1,17 @@
 import { Reveal, RevealItem } from './Reveal';
-import { SectionHeading } from './SectionHeading';
+import { DOCS_URL, GITHUB_URL } from '../links';
+import { ArrowIcon } from './icons';
 
 export function Quickstart() {
   return (
     <section className="section" id="install" aria-labelledby="install-title">
       <div className="shell">
         <Reveal>
-          <RevealItem>
-            <SectionHeading id="install-title" eyebrow="Install">
+          <RevealItem className="section-head">
+            <h2 id="install-title" className="section-title">
               Add it to your project
-            </SectionHeading>
+            </h2>
+            <p className="section-sub">The Vite plugin and overlay are optional. For Next.js, use withRedline.</p>
           </RevealItem>
         </Reveal>
         <Reveal as="div" className="snippets">
@@ -44,9 +46,15 @@ export function App() {
             </Snippet>
           </RevealItem>
         </Reveal>
-        <p className="install-note">
-          The Vite plugin and overlay are optional. For Next.js, use <code>withRedline</code>.
-        </p>
+        <div className="cta-row">
+          <a className="btn btn-primary" href={DOCS_URL} target="_blank" rel="noreferrer">
+            Read the docs
+            <ArrowIcon />
+          </a>
+          <a className="text-link" href={GITHUB_URL} target="_blank" rel="noreferrer">
+            View on GitHub
+          </a>
+        </div>
       </div>
     </section>
   );

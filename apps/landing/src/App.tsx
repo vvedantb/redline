@@ -1,11 +1,8 @@
-import { Cta } from './components/Cta';
-import { CompareSection } from './components/CompareSection';
+import { Demo } from './components/Demo';
 import { Footer } from './components/Footer';
 import { Hero } from './components/Hero';
-import { HistorySection } from './components/HistorySection';
 import { HowItWorks } from './components/HowItWorks';
 import { Nav } from './components/Nav';
-import { OverlaySection } from './components/OverlaySection';
 import { Quickstart } from './components/Quickstart';
 
 export function App() {
@@ -17,12 +14,9 @@ export function App() {
       <Nav />
       <main id="main">
         <Hero />
-        <CompareSection />
-        <OverlaySection />
-        <HistorySection />
+        <Demo />
         <HowItWorks />
         <Quickstart />
-        <Cta />
       </main>
       <Footer />
     </div>

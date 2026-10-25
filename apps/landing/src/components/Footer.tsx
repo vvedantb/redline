@@ -1,6 +1,5 @@
 import { NAV_LINKS } from '../content';
 import { GITHUB_URL } from '../links';
-import { GitHubIcon } from './icons';
 import { Wordmark } from './Wordmark';
 
 export function Footer() {
@@ -17,8 +16,8 @@ export function Footer() {
               {link.label}
             </a>
           ))}
-          <a href={GITHUB_URL} target="_blank" rel="noreferrer" aria-label="Redline on GitHub">
-            <GitHubIcon />
+          <a href={GITHUB_URL} target="_blank" rel="noreferrer">
+            GitHub
           </a>
         </nav>
       </div>
