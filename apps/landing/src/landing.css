@@ -1,6 +1,7 @@
 @import "tailwindcss";
 @import "@vvedantb/ui/tokens";
 @source "../node_modules/@vvedantb/ui/src/**/*.{ts,tsx}";
+@source "../node_modules/@vvedantb/ui/src/marketing/landing.css";
 @source "./**/*.{ts,tsx}";
 
 :root {

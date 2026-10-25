@@ -17,6 +17,7 @@ export function Demo() {
     if (!dir) return;
     event.preventDefault();
     const next = TABS[(index + dir + TABS.length) % TABS.length];
+    if (!next) return;
     setActive(next.id);
     document.getElementById(`tab-${next.id}`)?.focus();
   }
