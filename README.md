@@ -230,7 +230,7 @@ Redline also ships a dev-only overlay. You pin a baseline commit; after an agent
 2. The dev server serves `/__redline/*`. `GET /__redline/diff` runs `git diff <baseline>` over `tsx`, `jsx`, `ts`, `js` and `css` files, adds untracked files, and returns parsed hunks.
 3. `<RedlineOverlay />` fetches the diff, finds tagged elements, and maps each changed line to the innermost element whose source range contains it. It draws a fixed-position outline over each match.
 4. Each outline has a small label button. Click it to open a side panel with the file path, line and hunk text.
-5. A floating toolbar shows the status. Use it to hide outlines or open the commit history.
+5. A small Redline logo floats on the page, with a badge for the number of changed regions. Hover or click it to open the toolbar. Use the toolbar to hide outlines or open the commit history.
 6. In the history panel, click a commit to see the app as it was. Redline builds that commit in a separate git worktree and shows the build in an iframe.
 
 Redline does not change your production build. The transform and endpoints run only in dev unless you set `enabled: true`.
@@ -416,14 +416,20 @@ Outlines do not intercept clicks on your page. Only the small label button on ea
 
 #### Toolbar
 
-A floating toolbar sits bottom-left by default. It shows how many regions changed and which baseline they are compared with. It has:
+A small Redline logo sits bottom-left by default. A badge on it shows how many regions changed. The logo opens into a toolbar that shows how many regions changed and which baseline they are compared with.
 
-- a drag handle (⠿). Drag to move the toolbar. Double-click to put it back bottom-left.
+- Hover the logo, or tab to it, to open the toolbar. It closes shortly after the pointer leaves.
+- Click the logo to keep the toolbar open. Click it again to let it close. On touch screens, tap it.
+- The toolbar stays open while the history or changed pages panel is open, or while you view a commit.
+- Drag the logo to move it. Double-click it to put it back bottom-left. In the right half of the screen, the toolbar opens to the left of the logo.
+
+The toolbar has:
+
 - **Hide outlines** / **Show outlines**. This hides the outlines but keeps the toolbar, so you can turn them back on.
 - **Changed pages (N)**, which opens the list of pages the change reaches. It shows once a baseline is pinned. While the list loads, or if it fails, it reads **Changed pages (…)** and the panel shows the status or error.
 - **History**, which opens the commit history panel.
 
-The position and outline visibility are saved in `localStorage` under `redline:toolbar`. This is separate from `redlineDisabled`: that flag, and the other flags below, remove the whole overlay, toolbar included.
+The position and outline visibility are saved in `localStorage` under `redline:toolbar`. Whether the toolbar is kept open is not saved: a reload shows the logo only. This is separate from `redlineDisabled`: that flag, and the other flags below, remove the whole overlay, toolbar included.
 
 #### Changed pages
 
@@ -699,6 +705,7 @@ The E2E suite tests the package on its own demo. It needs the Vite dev server, b
 - pinning `HEAD` from the UI stores the git SHA
 - `?redline=0`, reduced motion, and the overlay toggle each turn the overlay off
 - the toolbar hides and shows outlines and restores its saved position after a reload
+- the toolbar is a compact logo that opens on hover, on click and while a panel is open, and a drag does not keep it open
 - the live demo reads its notes from the live dev API (`/api/demo/notes`) and shows the dev server's synthetic `VITE_CONVEX_URL`
 - choosing a commit in the history panel builds it, shows it in an iframe without outlines or pinning, and **Latest** returns to the live app with outlines
 - in that iframe the network layer is in `replay` mode: the notes come from `apps/demo/network-fixtures.json`, **Add note** is answered read-only and never reaches the live API (by `fetch` or XHR), and `VITE_CONVEX_URL` was not inlined into the build
