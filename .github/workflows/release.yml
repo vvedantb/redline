@@ -32,6 +32,9 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      # apps/demo resolves @vvedantb/redline to packages/redline/dist, so
+      # build the package before typecheck.
+      - run: npm run build -w @vvedantb/redline
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
