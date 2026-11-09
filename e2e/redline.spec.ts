@@ -31,6 +31,15 @@ async function pinCommitA(request: APIRequestContext) {
 
 const outlines = (page: Page) => page.locator('[data-redline-outline]');
 
+const toolbar = (page: Page) => page.getByRole('toolbar', { name: 'Redline' });
+const logo = (page: Page) => page.locator('[data-redline-drag]');
+
+/** Expand the compact toolbar by hovering its logo, so its controls can be clicked. */
+async function openToolbar(page: Page) {
+  await logo(page).hover();
+  await expect(toolbar(page)).toHaveAttribute('data-redline-expanded', 'true');
+}
+
 async function outlinedSources(page: Page): Promise<string[]> {
   return outlines(page).evaluateAll((els) => els.map((e) => e.getAttribute('data-redline-target') ?? ''));
 }
@@ -92,6 +101,7 @@ test('lists changed pages in a panel, marks the current one, and closes on Escap
   await pinCommitA(request);
   await page.goto('/?redline=1');
 
+  await openToolbar(page);
   const button = page.getByRole('button', { name: 'Changed pages (1)' });
   await expect(button).toBeVisible();
   await button.click();
@@ -199,29 +209,110 @@ test('the toolbar hides outlines and remembers its position', async ({ page, req
   await pinCommitA(request);
   await page.goto('/?redline=1');
   await expect.poll(async () => (await outlinedSources(page)).length).toBeGreaterThan(0);
-  const toolbar = page.getByRole('toolbar', { name: 'Redline' });
+  const bar = toolbar(page);
 
-  await toolbar.getByRole('button', { name: 'Hide outlines' }).click();
+  await openToolbar(page);
+  await bar.getByRole('button', { name: 'Hide outlines' }).click();
   await expect(outlines(page)).toHaveCount(0);
   await expect(page.locator('[data-redline-status]')).toContainText('(hidden)');
 
-  const handle = page.locator('[data-redline-drag]');
-  const box = (await handle.boundingBox())!;
+  const box = (await logo(page).boundingBox())!;
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.mouse.down();
   await page.mouse.move(300, 200, { steps: 5 });
   await page.mouse.up();
-  const moved = (await toolbar.boundingBox())!;
+  const moved = (await logo(page).boundingBox())!;
+  expect(Math.round(moved.x + moved.width / 2)).toBe(300);
+  expect(Math.round(moved.y + moved.height / 2)).toBe(200);
 
   await page.reload();
-  await expect(toolbar.getByRole('button', { name: 'Show outlines' })).toBeVisible();
+  await expect(bar).toHaveAttribute('data-redline-expanded', 'false');
   await expect(outlines(page)).toHaveCount(0);
-  const restored = (await toolbar.boundingBox())!;
+  const restored = (await logo(page).boundingBox())!;
   expect(Math.round(restored.x)).toBe(Math.round(moved.x));
   expect(Math.round(restored.y)).toBe(Math.round(moved.y));
 
-  await toolbar.getByRole('button', { name: 'Show outlines' }).click();
+  await openToolbar(page);
+  await bar.getByRole('button', { name: 'Show outlines' }).click();
   await expect.poll(async () => (await outlinedSources(page)).length).toBeGreaterThan(0);
+  await page.evaluate(() => localStorage.removeItem('redline:toolbar'));
+});
+
+test('the toolbar is a compact logo that expands on hover, on click, and while a panel is open', async ({ page, request }) => {
+  await pinCommitA(request);
+  await page.goto('/?redline=1');
+  await expect.poll(async () => (await outlinedSources(page)).length).toBeGreaterThan(0);
+  const bar = toolbar(page);
+  const history = page.getByRole('button', { name: 'History' });
+  const away = async () => page.mouse.move(600, 300);
+
+  // Collapsed by default: the logo only, with the status still in the DOM.
+  await expect(bar).toHaveAttribute('data-redline-expanded', 'false');
+  await expect(logo(page)).toBeVisible();
+  await expect(logo(page)).toHaveAttribute('aria-expanded', 'false');
+  await expect(logo(page)).toHaveAccessibleName(/^Redline: \d+ changed regions? vs /);
+  // The badge on the logo is the changed-region count.
+  await expect(logo(page)).toHaveText(/^[1-9]\d*$/);
+  await expect(history).toBeHidden();
+  await expect(page.locator('[data-redline-status]')).toContainText('changed region');
+  expect((await bar.boundingBox())!.width).toBeLessThanOrEqual(40);
+
+  // Hover expands; leaving collapses after a short delay.
+  await openToolbar(page);
+  await expect(history).toBeVisible();
+  expect((await bar.boundingBox())!.width).toBeGreaterThan(100);
+  await away();
+  await expect(bar).toHaveAttribute('data-redline-expanded', 'false');
+  await expect(history).toBeHidden();
+
+  // An open panel keeps the controls in view.
+  await openToolbar(page);
+  await history.click();
+  await expect(page.getByRole('dialog', { name: 'Redline history' })).toBeVisible();
+  await away();
+  await page.waitForTimeout(400);
+  await expect(bar).toHaveAttribute('data-redline-expanded', 'true');
+  await page.getByRole('button', { name: 'Close history panel' }).click();
+  await expect(bar).toHaveAttribute('data-redline-expanded', 'false');
+
+  // A click on the logo pins it open; a second click unpins it.
+  await logo(page).click();
+  await away();
+  await page.waitForTimeout(400);
+  await expect(bar).toHaveAttribute('data-redline-expanded', 'true');
+  await expect(logo(page)).toHaveAttribute('aria-expanded', 'true');
+  await logo(page).click();
+  await away();
+  await expect(bar).toHaveAttribute('data-redline-expanded', 'false');
+
+  // A drag moves the logo but does not pin.
+  const box = (await logo(page).boundingBox())!;
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(200, 200, { steps: 5 });
+  await page.mouse.up();
+  await away();
+  await expect(bar).toHaveAttribute('data-redline-expanded', 'false');
+  await page.waitForTimeout(400);
+  await expect(bar).toHaveAttribute('data-redline-expanded', 'false');
+
+  // In the right half, the bar grows leftwards and the logo stays put.
+  const viewport = page.viewportSize()!;
+  const start = (await logo(page).boundingBox())!;
+  await page.mouse.move(start.x + 14, start.y + 14);
+  await page.mouse.down();
+  await page.mouse.move(viewport.width - 100, 200, { steps: 5 });
+  await page.mouse.up();
+  const right = (await logo(page).boundingBox())!;
+  await expect(bar).toHaveAttribute('data-redline-expanded', 'true');
+  const expandedBox = (await bar.boundingBox())!;
+  expect(expandedBox.x).toBeLessThan(right.x - 100);
+  expect(Math.round(expandedBox.x + expandedBox.width)).toBe(Math.round(right.x + right.width));
+  await away();
+  await expect(bar).toHaveAttribute('data-redline-expanded', 'false');
+  const after = (await logo(page).boundingBox())!;
+  expect(Math.round(after.x)).toBe(Math.round(right.x));
+
   await page.evaluate(() => localStorage.removeItem('redline:toolbar'));
 });
 
@@ -245,8 +336,9 @@ test('history builds a commit, shows it in an iframe, and Latest returns to the 
     if (new URL(req.url()).pathname.startsWith('/api/demo/')) liveApiCalls.push(`${req.method()} ${req.url()}`);
   });
 
-  const toolbar = page.getByRole('toolbar', { name: 'Redline' });
-  await toolbar.getByRole('button', { name: 'History' }).click();
+  const bar = toolbar(page);
+  await openToolbar(page);
+  await bar.getByRole('button', { name: 'History' }).click();
   const panel = page.getByRole('dialog', { name: 'Redline history' });
   const target = panel.locator('[data-redline-commit]:not([data-redline-commit="latest"])').first();
   await expect(target).toBeVisible();
@@ -271,7 +363,7 @@ test('history builds a commit, shows it in an iframe, and Latest returns to the 
   // The build has no tags and no nested overlay; the toolbar stays outside the iframe.
   await expect(inner.locator('[data-redline-source]')).toHaveCount(0);
   await expect(inner.locator('[data-redline-toolbar]')).toHaveCount(0);
-  await expect(toolbar).toBeVisible();
+  await expect(bar).toBeVisible();
   await expect(page.locator('[data-redline-status]')).toContainText(`build of ${short} ready`);
 
   // Read-only network: the bootstrap replays fixtures and blocks writes.
@@ -308,7 +400,9 @@ test('history builds a commit, shows it in an iframe, and Latest returns to the 
   const state = await (await request.get('/__redline/baseline')).json();
   expect(state.baseline.mode).toBe('content');
 
-  await toolbar.getByRole('button', { name: 'Latest' }).click();
+  // Viewing a commit keeps the toolbar expanded.
+  await expect(bar).toHaveAttribute('data-redline-expanded', 'true');
+  await bar.getByRole('button', { name: 'Latest' }).click();
   await expect(frame).toHaveCount(0);
   await expect(page.locator('[data-redline-viewing]')).toHaveCount(0);
   await expect.poll(async () => (await outlinedSources(page)).length).toBeGreaterThan(0);

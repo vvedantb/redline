@@ -1,4 +1,4 @@
-import { useRef, type CSSProperties, type PointerEvent } from 'react';
+import { useEffect, useRef, useState, type CSSProperties, type FocusEvent, type PointerEvent } from 'react';
 import { matchPattern } from '../routes/pattern';
 import type { BuildJob, BuildStatus, ChangedPage, CommitInfo, PagesResponse } from '../types';
 import { setToolbarPrefs, type ToolbarPrefs } from './prefs';
@@ -19,15 +19,63 @@ const buttonStyle: CSSProperties = {
 /** Keep at least this much of the toolbar on screen when restoring a saved position. */
 const MIN_VISIBLE = 48;
 
-function clampPosition(p: { x: number; y: number }): CSSProperties {
+function clampPosition(p: { x: number; y: number }): { x: number; y: number } {
   const x = Math.min(Math.max(p.x, 0), window.innerWidth - MIN_VISIBLE);
   const y = Math.min(Math.max(p.y, 0), window.innerHeight - MIN_VISIBLE);
-  return { left: x, top: y };
+  return { x, y };
+}
+
+/** Logo button size in px. The saved position is its top-left corner. */
+const LOGO = 28;
+/** A press becomes a drag once the pointer moves this far, in px. */
+const DRAG_THRESHOLD = 4;
+/** Delay before the toolbar collapses after the pointer leaves, so a small slip does not close it. */
+const COLLAPSE_DELAY = 200;
+
+const logoStyle: CSSProperties = {
+  position: 'relative',
+  flex: 'none',
+  display: 'grid',
+  placeItems: 'center',
+  width: LOGO,
+  height: LOGO,
+  padding: 0,
+  border: 0,
+  borderRadius: 6,
+  background: 'transparent',
+  cursor: 'grab',
+  touchAction: 'none',
+};
+
+const badgeStyle: CSSProperties = {
+  position: 'absolute',
+  top: -4,
+  right: -4,
+  boxSizing: 'border-box',
+  minWidth: 14,
+  height: 14,
+  padding: '0 3px',
+  borderRadius: 7,
+  background: '#e11d48',
+  color: '#fff',
+  font: `10px/14px ${MONO}`,
+  textAlign: 'center',
+};
+
+function RedlineMark() {
+  return (
+    <svg width={14} height={14} viewBox="0 0 14 14" fill="none" aria-hidden="true">
+      <rect x="1" y="1" width="12" height="12" rx="2" stroke="#e11d48" strokeWidth="2" />
+      <rect x="4.5" y="4.5" width="5" height="5" rx="1" fill="#e11d48" />
+    </svg>
+  );
 }
 
 export interface ToolbarProps {
   prefs: ToolbarPrefs;
   status: string;
+  /** Changed regions on the live app. Shown as a badge on the logo. */
+  count: number;
   viewing: CommitInfo | null;
   historyOpen: boolean;
   onToggleHistory: () => void;
@@ -38,92 +86,159 @@ export interface ToolbarProps {
   onLatest: () => void;
 }
 
-/** Floating toolbar: drag handle, status, outline toggle, history and view-mode indicator. */
-export function Toolbar({ prefs, status, viewing, historyOpen, onToggleHistory, pages, pagesOpen, onTogglePages, onLatest }: ToolbarProps) {
-  // Pointer offset inside the toolbar for the current drag gesture. Not render state.
-  const grab = useRef<{ dx: number; dy: number } | null>(null);
+/**
+ * Floating toolbar. Collapsed, it is the Redline logo with a changed-region badge. It expands to show the
+ * status, outline toggle, changed pages, history and view-mode indicator while the mouse is over it, keyboard
+ * focus is in it, the logo was clicked to pin it, or a panel or history commit is open. The logo is also the
+ * drag handle. Collapsed controls stay mounted, so the status text stays in the DOM.
+ */
+export function Toolbar(props: ToolbarProps) {
+  const { prefs, status, count, viewing, historyOpen, onToggleHistory, pages, pagesOpen, onTogglePages, onLatest } = props;
+  const [hovered, setHovered] = useState(false);
+  const [focused, setFocused] = useState(false);
+  const [pinned, setPinned] = useState(false);
+  // Current press on the logo: pointer offset inside the logo, start point, and whether it became a drag.
+  const press = useRef<{ dx: number; dy: number; x: number; y: number; dragging: boolean } | null>(null);
+  // Set when a press ended as a drag, so the click that follows does not toggle `pinned`.
+  const dragged = useRef(false);
+  const collapseTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(collapseTimer.current), []);
 
-  const onPointerDown = (e: PointerEvent<HTMLSpanElement>) => {
-    const bar = e.currentTarget.parentElement;
-    if (!bar || e.button !== 0) return;
-    const rect = bar.getBoundingClientRect();
-    grab.current = { dx: e.clientX - rect.left, dy: e.clientY - rect.top };
+  const expanded = hovered || focused || pinned || historyOpen || pagesOpen || viewing !== null;
+
+  const onPointerDown = (e: PointerEvent<HTMLButtonElement>) => {
+    if (e.button !== 0) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    press.current = { dx: e.clientX - rect.left, dy: e.clientY - rect.top, x: e.clientX, y: e.clientY, dragging: false };
+    dragged.current = false;
     e.currentTarget.setPointerCapture(e.pointerId);
-    e.preventDefault();
   };
-  const onPointerMove = (e: PointerEvent<HTMLSpanElement>) => {
-    if (!grab.current) return;
-    setToolbarPrefs({ position: { x: e.clientX - grab.current.dx, y: e.clientY - grab.current.dy } });
+  const onPointerMove = (e: PointerEvent<HTMLButtonElement>) => {
+    const p = press.current;
+    if (!p) return;
+    if (!p.dragging && Math.hypot(e.clientX - p.x, e.clientY - p.y) <= DRAG_THRESHOLD) return;
+    p.dragging = true;
+    setToolbarPrefs({ position: { x: e.clientX - p.dx, y: e.clientY - p.dy } });
   };
-  const endDrag = () => {
-    grab.current = null;
+  const endPress = () => {
+    dragged.current = press.current?.dragging ?? false;
+    press.current = null;
+  };
+  const onClick = () => {
+    if (dragged.current) dragged.current = false;
+    else setPinned(!pinned);
   };
 
-  const place = prefs.position ? clampPosition(prefs.position) : { left: 12, bottom: 12 };
+  const onPointerEnter = (e: PointerEvent<HTMLDivElement>) => {
+    if (e.pointerType !== 'mouse') return;
+    clearTimeout(collapseTimer.current);
+    setHovered(true);
+  };
+  const onPointerLeave = (e: PointerEvent<HTMLDivElement>) => {
+    if (e.pointerType !== 'mouse') return;
+    clearTimeout(collapseTimer.current);
+    collapseTimer.current = setTimeout(() => setHovered(false), COLLAPSE_DELAY);
+  };
+  // Keyboard focus only: a mouse click on the logo focuses it too, and that must not keep the bar open.
+  const onFocus = (e: FocusEvent<HTMLDivElement>) => setFocused(e.target instanceof Element && e.target.matches(':focus-visible'));
+  const onBlur = (e: FocusEvent<HTMLDivElement>) => {
+    if (!e.currentTarget.contains(e.relatedTarget)) setFocused(false);
+  };
+
+  // Logo in the right half: grow leftwards, anchored by `right`, so the logo stays put as the bar expands.
+  const at = prefs.position ? clampPosition(prefs.position) : null;
+  const viewportWidth = document.documentElement.clientWidth;
+  const growLeft = at !== null && at.x + LOGO / 2 > viewportWidth / 2;
+  const place: CSSProperties = at
+    ? growLeft
+      ? { right: viewportWidth - at.x - LOGO, top: at.y }
+      : { left: at.x, top: at.y }
+    : { left: 12, bottom: 12 };
 
   return (
     <div
       role="toolbar"
       aria-label="Redline"
       data-redline-toolbar=""
+      data-redline-expanded={String(expanded)}
+      onPointerEnter={onPointerEnter}
+      onPointerLeave={onPointerLeave}
+      onFocus={onFocus}
+      onBlur={onBlur}
       style={{
         position: 'fixed',
         ...place,
         display: 'flex',
+        flexDirection: growLeft ? 'row-reverse' : 'row',
         alignItems: 'center',
-        gap: 6,
         pointerEvents: 'auto',
         font: `12px/1.4 ${MONO}`,
         color: '#fff',
         background: '#111827',
         borderRadius: 6,
-        padding: '4px 6px',
         boxShadow: '0 2px 8px rgba(0,0,0,0.25)',
         userSelect: 'none',
       }}
     >
-      <span
-        data-redline-drag=""
-        aria-hidden="true"
-        title="Drag to move. Double-click to reset."
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={endDrag}
-        onPointerCancel={endDrag}
-        onDoubleClick={() => setToolbarPrefs({ position: null })}
-        style={{ cursor: 'grab', padding: '0 2px', color: '#9ca3af', touchAction: 'none' }}
-      >
-        ⠿
-      </span>
-      <span data-redline-status="" role="status">
-        {status}
-      </span>
-      {viewing && (
-        <>
-          <span data-redline-viewing={viewing.sha} style={{ color: '#fbbf24' }}>
-            Viewing {viewing.shortSha}
-          </span>
-          <button type="button" onClick={onLatest} style={buttonStyle}>
-            Latest
-          </button>
-        </>
-      )}
       <button
         type="button"
-        aria-pressed={!prefs.outlines}
-        onClick={() => setToolbarPrefs({ outlines: !prefs.outlines })}
-        style={buttonStyle}
+        data-redline-drag=""
+        aria-label={status}
+        aria-expanded={expanded}
+        title="Redline. Drag to move. Double-click to reset."
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={endPress}
+        onPointerCancel={endPress}
+        onClick={onClick}
+        onDoubleClick={() => setToolbarPrefs({ position: null })}
+        style={logoStyle}
       >
-        {prefs.outlines ? 'Hide outlines' : 'Show outlines'}
+        <RedlineMark />
+        {count > 0 && !viewing && (
+          <span aria-hidden="true" style={badgeStyle}>
+            {count}
+          </span>
+        )}
       </button>
-      {pages && (
-        <button type="button" aria-expanded={pagesOpen} onClick={onTogglePages} style={buttonStyle}>
-          {pagesButtonLabel(pages)}
+      <div
+        style={{
+          display: expanded ? 'flex' : 'none',
+          alignItems: 'center',
+          gap: 6,
+          padding: growLeft ? '4px 0 4px 6px' : '4px 6px 4px 0',
+        }}
+      >
+        <span data-redline-status="" role="status">
+          {status}
+        </span>
+        {viewing && (
+          <>
+            <span data-redline-viewing={viewing.sha} style={{ color: '#fbbf24' }}>
+              Viewing {viewing.shortSha}
+            </span>
+            <button type="button" onClick={onLatest} style={buttonStyle}>
+              Latest
+            </button>
+          </>
+        )}
+        <button
+          type="button"
+          aria-pressed={!prefs.outlines}
+          onClick={() => setToolbarPrefs({ outlines: !prefs.outlines })}
+          style={buttonStyle}
+        >
+          {prefs.outlines ? 'Hide outlines' : 'Show outlines'}
         </button>
-      )}
-      <button type="button" aria-expanded={historyOpen} onClick={onToggleHistory} style={buttonStyle}>
-        History
-      </button>
+        {pages && (
+          <button type="button" aria-expanded={pagesOpen} onClick={onTogglePages} style={buttonStyle}>
+            {pagesButtonLabel(pages)}
+          </button>
+        )}
+        <button type="button" aria-expanded={historyOpen} onClick={onToggleHistory} style={buttonStyle}>
+          History
+        </button>
+      </div>
     </div>
   );
 }

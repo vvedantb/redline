@@ -349,6 +349,7 @@ export function RedlineOverlay(props: RedlineOverlayProps) {
       <Toolbar
         prefs={prefs}
         status={statusText(diff, regions.length, prefs.outlines, viewing, viewingJob)}
+        count={regions.length}
         viewing={viewing}
         historyOpen={historyOpen}
         onToggleHistory={() => {
