@@ -1,0 +1,86 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Build and check only. Do not version or publish.
+        type: boolean
+        default: false
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  id-token: write
+
+jobs:
+  verify:
+    name: Build and test
+    runs-on: ubuntu-latest
+    env:
+      CI: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  release:
+    name: Release
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      # Trusted Publishing (OIDC) only. setup-node has no registry-url, so it
+      # writes no auth config to .npmrc.
+      # Trusted Publishing needs npm >= 11.5.1.
+      - run: npm install -g npm@^11.5.1
+      - run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      # Dry run: no versioning, no publish.
+      - name: Changeset status
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+        continue-on-error: true
+        run: npx changeset status
+      # Set a throwaway version in the runner only, so the check passes when
+      # the current version is already on npm. Nothing is committed.
+      - name: Set throwaway dry-run version
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+        run: npm version 0.0.0-dryrun.0 --no-git-tag-version -w @vvedantb/redline
+      - name: npm publish (dry run)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+        run: npm publish --dry-run --tag dryrun -w @vvedantb/redline
+
+      # Normal path: Version Packages PR, or publish when it merges.
+      - name: Version PR or publish
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
+        uses: changesets/action@v1
+        with:
+          version: npm run version-packages
+          publish: npm run release
+          title: 'Version Packages'
+          commit: 'Version Packages'
+          createGithubReleases: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
