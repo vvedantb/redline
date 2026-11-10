@@ -13,8 +13,8 @@ declare global {
 const here = path.dirname(fileURLToPath(import.meta.url));
 const demoRoot = path.join(here, '..', 'apps', 'demo');
 const fixture = (name: string) => fs.readFileSync(path.join(here, 'fixtures', 'baseline', name), 'utf8');
-// Copies of the demo components as they are now. Update them when the demo changes.
-const current = (name: string) => fs.readFileSync(path.join(here, 'fixtures', 'current', name), 'utf8');
+// allow-source-read: pin input must match live demo files for re-pin e2e
+const current = (rel: string) => fs.readFileSync(path.join(demoRoot, rel), 'utf8');
 
 const HERO = 'src/components/Hero.tsx';
 const STATS = 'src/components/Stats.tsx';
@@ -128,7 +128,7 @@ test('re-pinning to the current content clears outlines', async ({ page, request
   await page.goto('/?redline=1');
   await expect.poll(async () => (await outlinedSources(page)).length).toBeGreaterThan(0);
 
-  const res = await request.post('/__redline/pin', { data: { files: { [HERO]: current('Hero.tsx'), [STATS]: current('Stats.tsx') } } });
+  const res = await request.post('/__redline/pin', { data: { files: { [HERO]: current(HERO), [STATS]: current(STATS) } } });
   expect(res.ok()).toBe(true);
   await expect(outlines(page)).toHaveCount(0);
   await expect(page.locator('[data-redline-status]')).toContainText('0 changed regions');

@@ -1,6 +1,10 @@
 // Fails when a test file reads repo source, CSS or docs as text.
 // Tests must call real code. Temp-dir fixtures (mkdtemp) are fine, so a path
 // such as src/Hero.tsx inside a temp root is not flagged.
+//
+// Escape hatch: a behavioural test that needs file contents as input data may
+// add `allow-source-read: <reason>` on the same line or the line immediately
+// above the read. The reason is required. Never use it to assert on source text.
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -17,6 +21,8 @@ const LIVE_PATH = /(?:['"`/])(?:apps|packages)(?:\/|['"`])|['"`]apps['"`]|['"`]p
 const LOCATION = /\b(?:import\.meta\.(?:url|dirname|filename)|__dirname|__filename|process\.cwd\s*\(\))/;
 const SOURCE_EXT = /\.(?:css|scss|md|mdx|tsx?|jsx?|mjs|cjs)\b/;
 
+const ALLOW = /allow-source-read:\s*\S/;
+
 export function isTestFile(file) {
   return TEST_FILE.test(file);
 }
@@ -31,6 +37,7 @@ export function findViolations(source) {
     const code = text.replace(/^\s*(?:\/\/|\*|\/\*).*$/, '');
     if (!code.trim()) return;
     const line = i + 1;
+    if (ALLOW.test(text) || (i > 0 && ALLOW.test(lines[i - 1]))) return;
     if (FS_CALL.test(code) && LIVE_PATH.test(code)) {
       out.push({ line, text: text.trim(), reason: 'reads a live apps/ or packages/ path' });
     } else if (FS_CALL.test(code) && LOCATION.test(code)) {
