@@ -13,6 +13,7 @@ declare global {
 const here = path.dirname(fileURLToPath(import.meta.url));
 const demoRoot = path.join(here, '..', 'apps', 'demo');
 const fixture = (name: string) => fs.readFileSync(path.join(here, 'fixtures', 'baseline', name), 'utf8');
+// allow-source-read: pin input must match live demo files for re-pin e2e
 const current = (rel: string) => fs.readFileSync(path.join(demoRoot, rel), 'utf8');
 
 const HERO = 'src/components/Hero.tsx';
