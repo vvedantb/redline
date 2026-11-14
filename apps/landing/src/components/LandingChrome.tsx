@@ -2,13 +2,13 @@ import { IconArrowRight, IconBrandGithub } from '@tabler/icons-react';
 import {
   Button,
   LandingFooter as KitLandingFooter,
-  LandingNavMenu as KitLandingNavMenu,
   ProductHero,
   ProductHeroOrbit,
+  SiteHeader,
 } from '@vvedantb/ui';
 import { NAV_LINKS } from '../content';
 import { DOCS_URL, GITHUB_URL } from '../links';
-import { LandingCta as KitLandingCta, LandingNav as KitLandingNav } from './kit';
+import { LandingCta as KitLandingCta } from './kit';
 import { ThemeToggle } from './ThemeToggle';
 import { Wordmark } from './Wordmark';
 
@@ -16,23 +16,22 @@ const github = { href: GITHUB_URL, label: 'Redline on GitHub', icon: <IconBrandG
 
 export function LandingNav() {
   return (
-    <KitLandingNav
+    <SiteHeader
       brand={<Wordmark />}
+      homeHref="#top"
       homeLabel="Redline, back to top"
       links={NAV_LINKS}
-      github={github}
-      actions={
-        <>
-          <ThemeToggle />
-          <Button asChild size="sm">
-            <a href={DOCS_URL} target="_blank" rel="noreferrer">
-              Install
-              <IconArrowRight size={14} aria-hidden />
-            </a>
-          </Button>
-        </>
+      githubUrl={GITHUB_URL}
+      githubLabel="Redline on GitHub"
+      actions={<ThemeToggle />}
+      cta={
+        <Button asChild size="sm" className="rounded-full">
+          <a href={DOCS_URL} target="_blank" rel="noreferrer">
+            Install
+            <IconArrowRight size={14} aria-hidden />
+          </a>
+        </Button>
       }
-      menu={<KitLandingNavMenu links={NAV_LINKS} github={{ href: GITHUB_URL, icon: <IconBrandGithub size={16} aria-hidden /> }} />}
     />
   );
 }
