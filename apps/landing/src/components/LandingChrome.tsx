@@ -3,10 +3,12 @@ import {
   Button,
   LandingFooter as KitLandingFooter,
   LandingNavMenu as KitLandingNavMenu,
+  ProductHero,
+  ProductHeroOrbit,
 } from '@vvedantb/ui';
-import { CAPABILITIES, NAV_LINKS } from '../content';
+import { NAV_LINKS } from '../content';
 import { DOCS_URL, GITHUB_URL } from '../links';
-import { LandingCta as KitLandingCta, LandingHero as KitLandingHero, LandingNav as KitLandingNav } from './kit';
+import { LandingCta as KitLandingCta, LandingNav as KitLandingNav } from './kit';
 import { ThemeToggle } from './ThemeToggle';
 import { Wordmark } from './Wordmark';
 
@@ -37,30 +39,13 @@ export function LandingNav() {
 
 export function LandingHero() {
   return (
-    <KitLandingHero
-      eyebrow="Visual diff for Vite & Next.js"
-      title={
-        <>
-          See what changed. <span className="italic text-foreground/85">On every page.</span>
-        </>
-      }
-      description="Redline builds two commits, screenshots each page, and outlines changed elements in your running app. Dev-only, local, no backend."
-      actions={
-        <>
-          <Button asChild size="lg" className="w-full sm:w-auto sm:min-w-40">
-            <a href={DOCS_URL} target="_blank" rel="noreferrer">
-              Install
-              <IconArrowRight size={16} aria-hidden />
-            </a>
-          </Button>
-          <Button asChild size="lg" variant="outline" className="w-full sm:w-auto">
-            <a href={GITHUB_URL} target="_blank" rel="noreferrer">
-              View on GitHub
-            </a>
-          </Button>
-        </>
-      }
-      capabilities={CAPABILITIES}
+    <ProductHero
+      title="See what changed. On every page."
+      tagline="Redline builds two commits, screenshots each page, and outlines changed elements in your running app. Dev-only, local, no backend."
+      primaryCta={{ label: 'Install', href: DOCS_URL, target: '_blank', rel: 'noreferrer' }}
+      secondaryCta={{ label: 'View on GitHub', href: GITHUB_URL, target: '_blank', rel: 'noreferrer' }}
+      visual={<ProductHeroOrbit accent="var(--redline)" />}
+      showProductOf={false}
     />
   );
 }
