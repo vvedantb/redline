@@ -5,8 +5,36 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   test:
+    uses: vvedantb/packages/.github/workflows/ci-app.yml@main
+    with:
+      package_manager: npm
+      runs_on: ubuntu-latest
+      env: |
+        CI=1
+      # Same order as before. The package builds first because the demos import its dist output.
+      keep_going: false
+      commands: |
+        npm run lint:tests
+        npm run build -w @vvedantb/redline
+        npm run typecheck
+        npm test
+      playwright_browsers: chromium
+      e2e_command: |
+        npm run test:e2e
+        npm run test:compare
+        npm run build
+      failure_artifact_paths: |
+        playwright-report/
+        test-results/
+
+  # The reusable workflow uploads artifacts only on failure. The PR diff report
+  # is uploaded on every run, so this step stays local.
+  pr-diff:
     runs-on: ubuntu-latest
     env:
       CI: '1'
@@ -17,24 +45,9 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm run lint:tests
-      - run: npm run build -w @vvedantb/redline
-      - run: npm run typecheck
-      - run: npm test
       - run: npx playwright install --with-deps chromium
-      - run: npm run test:e2e
-      - run: npm run test:compare
       - run: npm run test:pr-diff
       - uses: actions/upload-artifact@v4
         with:
           name: pr-diff-report
           path: e2e/artifacts/
-      - run: npm run build
-      - uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: playwright-report
-          path: |
-            playwright-report/
-            test-results/
-          retention-days: 7
