@@ -46,7 +46,16 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npx playwright install --with-deps chromium
+      # scripts/pr-diff-e2e.mjs launches the Chrome that ubuntu-latest ships
+      # (/usr/bin/google-chrome) and never uses Playwright's own Chromium, so the
+      # apt and browser download is skipped. Without that Chrome it still runs.
+      - name: Install Playwright Chromium when the runner has no Chrome
+        run: |
+          if [ -x /usr/bin/google-chrome ]; then
+            echo "Using $(/usr/bin/google-chrome --version)"
+          else
+            npx playwright install --with-deps chromium
+          fi
       - run: npm run test:pr-diff
       - uses: actions/upload-artifact@v4
         with:
