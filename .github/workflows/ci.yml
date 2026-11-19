@@ -17,6 +17,8 @@ jobs:
       env: |
         CI=1
       # Same order as before. The package builds first because the demos import its dist output.
+      # node_modules cache on an exact lockfile key; main seeds it, PR runs restore it.
+      cache_node_modules: true
       keep_going: false
       commands: |
         npm run lint:tests
