@@ -25,10 +25,10 @@ jobs:
         npm run typecheck
         npm test
       playwright_browsers: chromium
+      # One build of the package, then the Playwright suite, both compare checks and the
+      # demo and landing builds at the same time. See scripts/ci-e2e.mjs.
       e2e_command: |
-        npm run test:e2e
-        npm run test:compare
-        npm run build
+        node scripts/ci-e2e.mjs
       failure_artifact_paths: |
         playwright-report/
         test-results/
