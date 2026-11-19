@@ -1,0 +1,6 @@
+{
+  "extends": ["./node_modules/@vvedantb/config/oxlint/base.json"],
+  "rules": {
+    "react/react-in-jsx-scope": "off"
+  }
+}
