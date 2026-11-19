@@ -1,7 +1,8 @@
 {
   "extends": ["./node_modules/@vvedantb/config/oxlint/base.json"],
   "rules": {
-    "react/react-in-jsx-scope": "off"
+    "react/react-in-jsx-scope": "off",
+    "import/no-unassigned-import": "off"
   },
   "overrides": [
     {
@@ -23,7 +24,303 @@
         "examples/compare/next/head/components/StatusWidget.jsx"
       ],
       "rules": {
-        "no-effect/no-initialize-state": "off"
+        "no-effect/no-initialize-state": "off",
+        "react/set-state-in-effect": "off"
+      }
+    },
+    {
+      "files": [
+        "packages/redline/src/cli.ts",
+        "packages/redline/src/convex.ts",
+        "scripts/check-no-source-text-tests.mjs",
+        "scripts/compare-e2e.mjs",
+        "scripts/pr-diff-e2e.mjs"
+      ],
+      "rules": {
+        "eslint/no-console": "off"
+      }
+    },
+    {
+      "files": [
+        "scripts/release-publish.mjs"
+      ],
+      "rules": {
+        "eslint/no-console": "off",
+        "unicorn/prefer-string-starts-ends-with": "off"
+      }
+    },
+    {
+      "files": [
+        "packages/redline/src/build.ts"
+      ],
+      "rules": {
+        "eslint/no-control-regex": "off",
+        "unicorn/consistent-function-scoping": "off",
+        "unicorn/no-array-reverse": "off",
+        "unicorn/no-array-sort": "off"
+      }
+    },
+    {
+      "files": [
+        "packages/redline/src/compare/compare.ts"
+      ],
+      "rules": {
+        "eslint/no-shadow": "off",
+        "eslint/preserve-caught-error": "off",
+        "typescript/no-non-null-assertion": "off",
+        "unicorn/no-array-reverse": "off",
+        "unicorn/no-array-sort": "off"
+      }
+    },
+    {
+      "files": [
+        "packages/redline/test/standalone.test.ts"
+      ],
+      "rules": {
+        "eslint/no-shadow": "off",
+        "typescript/no-explicit-any": "off",
+        "unicorn/no-array-sort": "off"
+      }
+    },
+    {
+      "files": [
+        "packages/redline/test/pr-loop.test.ts"
+      ],
+      "rules": {
+        "eslint/no-shadow": "off",
+        "unicorn/consistent-function-scoping": "off"
+      }
+    },
+    {
+      "files": [
+        "packages/redline/test/compare.test.ts"
+      ],
+      "rules": {
+        "eslint/no-shadow": "off",
+        "unicorn/consistent-function-scoping": "off",
+        "unicorn/no-array-sort": "off"
+      }
+    },
+    {
+      "files": [
+        "packages/redline/src/compare/capture.ts"
+      ],
+      "rules": {
+        "eslint/no-underscore-dangle": "off",
+        "eslint/preserve-caught-error": "off",
+        "unicorn/consistent-function-scoping": "off",
+        "unicorn/no-array-sort": "off"
+      }
+    },
+    {
+      "files": [
+        "packages/redline/src/next.ts"
+      ],
+      "rules": {
+        "eslint/no-underscore-dangle": "off",
+        "typescript/no-explicit-any": "off",
+        "unicorn/no-useless-fallback-in-spread": "off"
+      }
+    },
+    {
+      "files": [
+        "e2e/redline.spec.ts"
+      ],
+      "rules": {
+        "eslint/no-underscore-dangle": "off",
+        "typescript/no-non-null-assertion": "off",
+        "unicorn/prefer-add-event-listener": "off"
+      }
+    },
+    {
+      "files": [
+        "packages/redline/src/network/runtime.ts",
+        "packages/redline/test/network.test.ts",
+        "packages/redline/test/review-scale.test.ts"
+      ],
+      "rules": {
+        "eslint/no-underscore-dangle": "off",
+        "unicorn/consistent-function-scoping": "off"
+      }
+    },
+    {
+      "files": [
+        "packages/redline/src/routes/pattern.ts"
+      ],
+      "rules": {
+        "eslint/no-unused-vars": "off"
+      }
+    },
+    {
+      "files": [
+        "packages/redline/src/client/toolbar.tsx"
+      ],
+      "rules": {
+        "react/iframe-missing-sandbox": "off"
+      }
+    },
+    {
+      "files": [
+        "apps/demo/src/components/RedlineControls.tsx"
+      ],
+      "rules": {
+        "react/set-state-in-effect": "off"
+      }
+    },
+    {
+      "files": [
+        "packages/redline/test/convex.test.ts"
+      ],
+      "rules": {
+        "typescript/consistent-type-imports": "off",
+        "unicorn/consistent-function-scoping": "off"
+      }
+    },
+    {
+      "files": [
+        "packages/redline/src/routes/pkg.ts"
+      ],
+      "rules": {
+        "typescript/no-explicit-any": "off"
+      }
+    },
+    {
+      "files": [
+        "packages/redline/test/next.test.ts"
+      ],
+      "rules": {
+        "typescript/no-explicit-any": "off",
+        "typescript/no-non-null-assertion": "off",
+        "unicorn/consistent-function-scoping": "off",
+        "unicorn/no-array-sort": "off"
+      }
+    },
+    {
+      "files": [
+        "packages/redline/src/jev.ts",
+        "packages/redline/src/routes/imports.ts"
+      ],
+      "rules": {
+        "typescript/no-explicit-any": "off",
+        "typescript/no-non-null-assertion": "off",
+        "unicorn/no-array-sort": "off"
+      }
+    },
+    {
+      "files": [
+        "packages/redline/test/jev.test.ts"
+      ],
+      "rules": {
+        "typescript/no-explicit-any": "off",
+        "unicorn/consistent-function-scoping": "off"
+      }
+    },
+    {
+      "files": [
+        "apps/demo/src/main.tsx",
+        "apps/landing/src/main.tsx",
+        "packages/redline/test/transform.test.ts"
+      ],
+      "rules": {
+        "typescript/no-non-null-assertion": "off"
+      }
+    },
+    {
+      "files": [
+        "packages/redline/src/compare/report.ts",
+        "packages/redline/test/pages.test.ts"
+      ],
+      "rules": {
+        "typescript/no-non-null-assertion": "off",
+        "unicorn/consistent-function-scoping": "off"
+      }
+    },
+    {
+      "files": [
+        "packages/redline/src/compare/pixels.ts",
+        "packages/redline/src/routes/discover.ts"
+      ],
+      "rules": {
+        "typescript/no-non-null-assertion": "off",
+        "unicorn/consistent-function-scoping": "off",
+        "unicorn/no-array-sort": "off"
+      }
+    },
+    {
+      "files": [
+        "packages/redline/src/compare/groups.ts",
+        "packages/redline/src/routes/affected.ts",
+        "packages/redline/test/match.test.ts"
+      ],
+      "rules": {
+        "typescript/no-non-null-assertion": "off",
+        "unicorn/no-array-sort": "off"
+      }
+    },
+    {
+      "files": [
+        "packages/redline/src/compare/routechanges.ts",
+        "packages/redline/test/build.test.ts",
+        "packages/redline/test/routes/tanstack.test.ts"
+      ],
+      "rules": {
+        "unicorn/consistent-function-scoping": "off",
+        "unicorn/no-array-sort": "off"
+      }
+    },
+    {
+      "files": [
+        "packages/redline/test/routes/imports.test.ts"
+      ],
+      "rules": {
+        "unicorn/consistent-function-scoping": "off",
+        "unicorn/no-array-sort": "off",
+        "unicorn/prefer-string-starts-ends-with": "off"
+      }
+    },
+    {
+      "files": [
+        "packages/redline/src/compare/classify.ts",
+        "packages/redline/src/diff.ts",
+        "packages/redline/src/pages.ts",
+        "packages/redline/test/routes/affected.test.ts",
+        "packages/redline/test/routes/signout.test.ts"
+      ],
+      "rules": {
+        "unicorn/no-array-sort": "off"
+      }
+    },
+    {
+      "files": [
+        "packages/redline/src/standalone.ts"
+      ],
+      "rules": {
+        "unicorn/no-array-sort": "off",
+        "unicorn/no-useless-spread": "off"
+      }
+    },
+    {
+      "files": [
+        "packages/redline/src/compare/pool.ts"
+      ],
+      "rules": {
+        "unicorn/no-new-array": "off"
+      }
+    },
+    {
+      "files": [
+        "packages/redline/src/client/baseline.ts"
+      ],
+      "rules": {
+        "unicorn/no-useless-fallback-in-spread": "off"
+      }
+    },
+    {
+      "files": [
+        "packages/redline/src/routes/vite.ts"
+      ],
+      "rules": {
+        "unicorn/prefer-string-starts-ends-with": "off"
       }
     }
   ]

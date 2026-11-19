@@ -20,6 +20,7 @@ jobs:
       keep_going: false
       commands: |
         npm run lint:tests
+        npm run lint
         npm run build -w @vvedantb/redline
         npm run typecheck
         npm test
