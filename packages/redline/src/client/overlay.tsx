@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 import { isOverlayEnabled, STORAGE_DISABLED_KEY } from '../flags';
 import { matchChangedRegions, type TaggedNode } from '../match';
@@ -107,6 +107,10 @@ function statusText(diff: DiffResponse | null, count: number, outlines: boolean,
   return `Redline: ${count} changed region${count === 1 ? '' : 's'} vs ${shortSha(diff.baselineSha)}${hidden}${error}`;
 }
 
+const subscribeNever = () => () => {};
+const onClient = () => true;
+const onServer = () => false;
+
 /** Draws outlines around rendered elements whose source changed since the pinned baseline. */
 export function RedlineOverlay(props: RedlineOverlayProps) {
   const { endpoint = DEFAULT_ENDPOINT, baseline, pollInterval = 2000, color = '#e11d48' } = props;
@@ -115,7 +119,8 @@ export function RedlineOverlay(props: RedlineOverlayProps) {
   const [layoutTick, setLayoutTick] = useState(0);
   const [regions, setRegions] = useState<Region[]>([]);
   const [selected, setSelected] = useState<Region | null>(null);
-  const [mounted, setMounted] = useState(false);
+  // False on the server and while hydrating, true on the client after that.
+  const mounted = useSyncExternalStore(subscribeNever, onClient, onServer);
   // History view: show a production build of this commit in an iframe. Never pins or checks out.
   const [viewing, setViewing] = useState<CommitInfo | null>(null);
   const [history, setHistory] = useState<HistoryState | null>(null);
@@ -130,8 +135,6 @@ export function RedlineOverlay(props: RedlineOverlayProps) {
   const historyOpen = history !== null;
   const builds = useBuilds(endpoint, historyOpen || viewing !== null);
   const viewingJob = viewing ? builds.builds[viewing.sha] : undefined;
-
-  useEffect(() => setMounted(true), []);
 
   const clientActive = useMemo(
     () => mounted && readFlags(props),
