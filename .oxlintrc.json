@@ -5,14 +5,19 @@
   },
   "overrides": [
     {
+      // Kept: three effects sync with things outside React and would change behaviour if moved.
+      // 1. Regions are measured from the live DOM after commit, on diff, scroll, resize and mutation.
+      // 2. Changed pages are fetched when the changed-file key changes, and dropped when the overlay turns off.
+      // 3. The selection is cleared when the overlay turns off, so it does not come back on re-enable.
       "files": ["packages/redline/src/client/overlay.tsx"],
       "rules": {
-        "no-effect/no-initialize-state": "off",
         "no-effect/no-chain-state-updates": "off",
         "no-effect/no-event-handler": "off"
       }
     },
     {
+      // Kept: compare fixtures. The head widget must throw in an effect after mount, so the
+      // compare e2e classes /status as broken; the base widget is its matching "before" file.
       "files": [
         "examples/compare/next/base/components/StatusWidget.jsx",
         "examples/compare/next/head/components/StatusWidget.jsx"
