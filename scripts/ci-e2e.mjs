@@ -22,11 +22,11 @@ function run(command) {
 }
 
 function report(result) {
-  console.log(`::group::${result.command}`);
+  console.info(`::group::${result.command}`);
   process.stdout.write(result.output);
-  console.log('::endgroup::');
-  console.log(`[End-to-end] ${result.command} - ${result.seconds.toFixed(0)}s - ${result.code === 0 ? 'ok' : 'FAILED'}`);
-  if (result.code !== 0) console.log(`::error::Failed: ${result.command}`);
+  console.info('::endgroup::');
+  console.info(`[End-to-end] ${result.command} - ${result.seconds.toFixed(0)}s - ${result.code === 0 ? 'ok' : 'FAILED'}`);
+  if (result.code !== 0) console.info(`::error::Failed: ${result.command}`);
 }
 
 const build = await run('npm run build -w @vvedantb/redline');
