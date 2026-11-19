@@ -2,5 +2,24 @@
   "extends": ["./node_modules/@vvedantb/config/oxlint/base.json"],
   "rules": {
     "react/react-in-jsx-scope": "off"
-  }
+  },
+  "overrides": [
+    {
+      "files": ["packages/redline/src/client/overlay.tsx"],
+      "rules": {
+        "no-effect/no-initialize-state": "off",
+        "no-effect/no-chain-state-updates": "off",
+        "no-effect/no-event-handler": "off"
+      }
+    },
+    {
+      "files": [
+        "examples/compare/next/base/components/StatusWidget.jsx",
+        "examples/compare/next/head/components/StatusWidget.jsx"
+      ],
+      "rules": {
+        "no-effect/no-initialize-state": "off"
+      }
+    }
+  ]
 }
