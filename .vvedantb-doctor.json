@@ -1,0 +1,6 @@
+{
+  "ciCommands": {
+    "npm run lint:tests": "Runs the repository guard that stops tests from reading the live source tree.",
+    "npm run build -w @vvedantb/redline": "Builds the package first because the demo and landing apps type-check and test against its built output."
+  }
+}
