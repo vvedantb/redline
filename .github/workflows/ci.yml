@@ -16,14 +16,22 @@ jobs:
       runs_on: boat-large
       env: |
         CI=1
-      # Same order as before. The package builds first because the demos import its dist output.
-      keep_going: false
+      # parallel runs every command and fails at the end if any failed, so it needs keep_going: true.
+      # A failing command still fails the Check job. Typecheck needs the package build, so those two share a line.
+      keep_going: true
+      parallel: true
+      max_parallel: 0
+      fetch_depth: 0
+      affected_tests: true
+      full_run_paths: |
+        ^scripts/
+        ^examples/
+        ^e2e/
       commands: |
         npm run lint:tests
         npm run lint
-        npm run build -w @vvedantb/redline
-        npm run typecheck
-        npm test
+        npm run build -w @vvedantb/redline && npm run typecheck
+        npm test -- ${VV_TEST_CHANGED:+$VV_TEST_CHANGED --passWithNoTests}
       playwright_browsers: chromium
       # One build of the package, then the Playwright suite, both compare checks and the
       # demo and landing builds at the same time. See scripts/ci-e2e.mjs.
