@@ -56,3 +56,5 @@ export function highlightLine(line: string, lang: string | null): string {
   }
   return out + esc(line.slice(last));
 }
+
+// narrowed-run probe, not for merge
