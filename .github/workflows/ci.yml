@@ -20,7 +20,7 @@ jobs:
       # A failing command still fails the Check job. Typecheck needs the package build, so those two share a line.
       keep_going: true
       parallel: true
-      max_parallel: 0
+      max_parallel: 2
       fetch_depth: 0
       affected_tests: true
       full_run_paths: |
