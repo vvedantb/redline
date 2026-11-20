@@ -1,6 +1,7 @@
 {
   "ciCommands": {
     "npm run lint:tests": "Runs the repository guard that stops tests from reading the live source tree.",
-    "npm run build -w @vvedantb/redline": "Builds the package first because the demo and landing apps type-check and test against its built output."
+    "npm run build -w @vvedantb/redline && npm run typecheck": "Builds the package first because the demo and landing apps type-check against its built output. The two share a line so the parallel runner keeps that order.",
+    "npm test -- ${VV_TEST_CHANGED:+$VV_TEST_CHANGED --passWithNoTests}": "Runs Vitest on the tests the pull request can reach. The shared workflow leaves the variable empty for a full run, which then runs every test and fails on zero tests."
   }
 }
