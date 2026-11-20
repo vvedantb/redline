@@ -31,7 +31,7 @@ jobs:
         npm run lint:tests
         npm run lint
         npm run build -w @vvedantb/redline && npm run typecheck
-        npm test -- ${VV_TEST_CHANGED:+$VV_TEST_CHANGED --passWithNoTests}
+        npm test -w @vvedantb/redline -- ${VV_TEST_CHANGED:+$VV_TEST_CHANGED --passWithNoTests}
       # The runner image apt sources fail "playwright install --with-deps" (PPA label change, 20 November 2026),
       # so the browser installs here without it. One build of the package, then the Playwright suite, both compare checks and the
       # demo and landing builds at the same time. See scripts/ci-e2e.mjs.
