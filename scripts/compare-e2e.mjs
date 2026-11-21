@@ -68,7 +68,7 @@ for (const name of process.argv.slice(2).length ? process.argv.slice(2) : Object
   console.log(`\n=== ${name} ===`);
   const dir = makeRepo(name);
   const started = Date.now();
-  execFileSync(process.execPath, [cli, 'compare', '--root', dir], { stdio: 'inherit', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null' } });
+  execFileSync(process.execPath, [cli, 'compare', '--root', dir, ...(process.env.CI ? ['--concurrency', '2'] : [])], { stdio: 'inherit', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null' } });
   const report = JSON.parse(fs.readFileSync(path.join(dir, '.redline/report/report.json'), 'utf8'));
   const byPath = new Map(report.pages.map((p) => [p.path, p]));
   for (const [route, [status, suspect]] of Object.entries(EXPECTED[name])) {

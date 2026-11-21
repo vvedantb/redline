@@ -1,5 +1,5 @@
-// CI end-to-end step. Builds @vvedantb/redline once, then runs the four independent checks at
-// the same time: the Playwright suite, the Next and Vite compare checks, and the demo and
+// CI end-to-end step. Builds @vvedantb/redline once, then runs the four independent checks, two
+// at a time to suit a 4 vCPU runner: the Playwright suite, the Next and Vite compare checks, and the demo and
 // landing builds. Each check keeps its own output, printed in a group when it ends. Every
 // check runs to the end, nothing is retried or skipped, and the exit code is 1 if any failed.
 //
@@ -34,7 +34,20 @@ report(build);
 if (build.code !== 0) process.exit(1);
 
 const checks = ['npx playwright test', 'node scripts/compare-e2e.mjs next', 'node scripts/compare-e2e.mjs vite', 'npm run build -w redline-demo && npm run build -w redline-landing'];
-const results = await Promise.all(checks.map((command) => run(command).then((result) => (report(result), result))));
+// Small pool: at most MAX_CONCURRENT checks run at once.
+const MAX_CONCURRENT = 2;
+const results = new Array(checks.length);
+let next = 0;
+await Promise.all(
+  Array.from({ length: MAX_CONCURRENT }, async () => {
+    while (next < checks.length) {
+      const i = next++;
+      const result = await run(checks[i]);
+      report(result);
+      results[i] = result;
+    }
+  }),
+);
 
 const failed = results.filter((result) => result.code !== 0);
 if (failed.length) {
