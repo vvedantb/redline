@@ -26,29 +26,13 @@ permissions:
   id-token: write
 
 jobs:
-  verify:
-    name: Build and test
+  # One job, so npm ci and the package build run once. The CI workflow already
+  # runs lint, tests and e2e for the commit, so they are not repeated here.
+  release:
+    name: Release
     runs-on: ubuntu-latest
     env:
       CI: '1'
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      # apps/demo resolves @vvedantb/redline to packages/redline/dist, so
-      # build the package before typecheck.
-      - run: npm run build -w @vvedantb/redline
-      - run: npm run typecheck
-      - run: npm test
-      - run: npm run build
-
-  release:
-    name: Release
-    needs: verify
-    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
@@ -63,8 +47,15 @@ jobs:
       - run: npm install -g npm@^11.5.1
       - run: npm ci
 
-      - name: Build
-        run: npm run build
+      # The package publishes dist, so build it. The demo and landing builds
+      # are not published, and CI already covers them.
+      - name: Build package
+        run: npm run build -w @vvedantb/redline
+
+      # Fast typecheck of the package. The demo resolves the package to dist,
+      # so the build above comes first.
+      - name: Typecheck package
+        run: npm run typecheck -w @vvedantb/redline
 
       # Dry run: no versioning, no publish.
       - name: Changeset status
