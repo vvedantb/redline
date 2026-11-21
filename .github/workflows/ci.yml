@@ -13,7 +13,7 @@ jobs:
     uses: vvedantb/packages/.github/workflows/ci-app.yml@main
     with:
       package_manager: npm
-      runs_on: boat-large
+      runs_on: ubuntu-latest
       env: |
         CI=1
       # parallel runs every command and fails at the end if any failed, so it needs keep_going: true.
@@ -34,7 +34,7 @@ jobs:
         npm test -w @vvedantb/redline -- ${VV_TEST_CHANGED:+$VV_TEST_CHANGED --passWithNoTests}
       # The runner image apt sources fail "playwright install --with-deps" (PPA label change, 20 November 2026),
       # so the browser installs here without it. One build of the package, then the Playwright suite, both compare checks and the
-      # demo and landing builds at the same time. See scripts/ci-e2e.mjs.
+      # demo and landing builds, two at a time. See scripts/ci-e2e.mjs.
       e2e_command: |
         npx playwright install chromium
         node scripts/ci-e2e.mjs
